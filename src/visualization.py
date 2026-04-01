@@ -288,3 +288,24 @@ def plot_confusion_matrix(y_true, y_pred, class_names, save_dir, model_name="Mod
     save_path = os.path.join(save_dir, f'{model_name}_confusion_matrix.png')
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.show()
+
+
+def plot_gamma_sweep(gamma_map, model_name, save_dir):
+    gammas = list(gamma_map.keys())
+    means  = [np.mean(v) for v in gamma_map.values()]
+    stds   = [np.std(v)  for v in gamma_map.values()]
+
+    plt.figure(figsize=(8, 5))
+    plt.errorbar(gammas, means, yerr=stds, marker='o', linewidth=2,
+                 capsize=5, label='mean ± std (5-fold)')
+    plt.xlabel('Focal Loss gamma', fontsize=12)
+    plt.ylabel('Macro F2-Score (결함 클래스)', fontsize=12)
+    plt.title(f'{model_name.upper()} — Gamma Sweep', fontsize=14, fontweight='bold')
+    plt.xticks(gammas)
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.legend()
+    plt.tight_layout()
+    path = os.path.join(save_dir, f'{model_name}_gamma_sweep.png')
+    plt.savefig(path, dpi=300, bbox_inches='tight')
+    plt.show()
+    print(f"저장: {path}")
