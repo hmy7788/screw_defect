@@ -213,7 +213,7 @@ def show_gradcam_grid(model, test_transform, base_dir, device, save_dir, model_n
         {'label': 'Type 5', 'dir': f'{base_dir}/type5',  'prefix': 'type5', 'true_idx': 5},
     ]
 
-    fig, axes = plt.subplots(nrows=5, ncols=3, figsize=(10, 14)) 
+    fig, axes = plt.subplots(nrows=6, ncols=3, figsize=(10, 14)) 
     fig.suptitle(f'{model_name.upper()} - Prediction vs Grad-CAM', fontsize=20, fontweight='bold', y=1.02)
 
     for row, config in enumerate(row_configs):
