@@ -205,11 +205,12 @@ def show_gradcam_grid(model, test_transform, base_dir, device, save_dir, model_n
     )
 
     row_configs = [
-        {'label': 'Good',   'dir': f'{base_dir}/good', 'prefix': 'good',  'true_idx': 1},
-        {'label': 'Type 1', 'dir': f'{base_dir}/bad',  'prefix': 'type1', 'true_idx': 0},
-        {'label': 'Type 2', 'dir': f'{base_dir}/bad',  'prefix': 'type2', 'true_idx': 0},
-        {'label': 'Type 3', 'dir': f'{base_dir}/bad',  'prefix': 'type3', 'true_idx': 0},
-        {'label': 'Type 4', 'dir': f'{base_dir}/bad',  'prefix': 'type4', 'true_idx': 0}
+        {'label': 'Good',   'dir': f'{base_dir}/good', 'prefix': 'good',  'true_idx': 0},
+        {'label': 'Type 1', 'dir': f'{base_dir}/type1',  'prefix': 'type1', 'true_idx': 1},
+        {'label': 'Type 2', 'dir': f'{base_dir}/type2',  'prefix': 'type2', 'true_idx': 2},
+        {'label': 'Type 3', 'dir': f'{base_dir}/type3',  'prefix': 'type3', 'true_idx': 3},
+        {'label': 'Type 4', 'dir': f'{base_dir}/type4',  'prefix': 'type4', 'true_idx': 4},
+        {'label': 'Type 5', 'dir': f'{base_dir}/type5',  'prefix': 'type5', 'true_idx': 5},
     ]
 
     fig, axes = plt.subplots(nrows=5, ncols=3, figsize=(10, 14)) 
