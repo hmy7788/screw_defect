@@ -309,3 +309,23 @@ def plot_gamma_sweep(gamma_map, model_name, save_dir):
     plt.savefig(path, dpi=300, bbox_inches='tight')
     plt.show()
     print(f"저장: {path}")
+
+
+def plot_weight_sweep(weight_map, model_name, save_dir):
+    weights = list(weight_map.keys())
+    means  = [np.mean(v) for v in weight_map.values()]
+    stds   = [np.std(v)  for v in weight_map.values()]
+
+    plt.figure(figsize=(8, 5))
+    plt.errorbar(weights, means, yerr=stds, marker='o', linewidth=2,
+                 capsize=5, label='mean ± std (5-fold)')
+    plt.xlabel('Bad Class Weight', fontsize=12)
+    plt.ylabel('F2-Score (Bad Class)', fontsize=12)
+    plt.title(f'{model_name.upper()} — Bad Class Weight Sweep', fontsize=14, fontweight='bold')
+    plt.xticks(weights)
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.legend()
+    plt.tight_layout()
+    path = os.path.join(save_dir, f'{model_name}_bad_class_weight_sweep.png')
+    plt.savefig(path, dpi=300, bbox_inches='tight')
+    plt.show()
