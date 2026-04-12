@@ -358,7 +358,7 @@ def plot_weight_sweep(weight_map, model_name, save_dir):
 
 
 # 
-def display_db_as_dataframe(model_name, db: dict):
+def display_db_as_dataframe(model_name, db: dict, save_dir):
     records = []
 
     for w, folds in db.items():
@@ -378,5 +378,6 @@ def display_db_as_dataframe(model_name, db: dict):
     
     display(df)
 
-    df.to_excel(f'{model_name}_db_output.xlsx', index=False)
-    print(f"저장: {model_name}_db_output.xlsx")
+    path = os.path.join(save_dir, f'{model_name}_db_output.xlsx')
+    df.to_excel(path, index=False)
+    print(f"저장: {path}")
