@@ -10,13 +10,17 @@ from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 import torchvision.transforms as transforms
 from sklearn.metrics import confusion_matrix
 import seaborn as sns
+import pandas as pd
+from sklearn.metrics import classification_report
 
 # ========================================================
 # 1. 학습 로스 추이 그래프 (에포크 / train loss, val loss)
 # ========================================================
 def plot_loss_history(train_loss, val_loss, save_dir, model_name="Model"):
     """
-    최고 성능을 낸 모델의 에포크별 loss 추이 그래프
+    - 최고 성능을 낸 모델의 에포크별 loss 추이 그래프
+    - x: 에포크
+    - y: loss (train, val)
     """
     epochs = range(1, len(train_loss) + 1)
 
@@ -78,27 +82,29 @@ def plot_weight_tradeoff(weights, recalls, f1s, f2s, save_dir, model_name='Model
 # ==================
 def plot_model_comparison_pareto(model_names, f2_scores, fps_list, alpha, save_dir, device_label=None):
     """
-    3개 모델의 FPS와 F2-Score를 바탕으로 E-Score(가중 산술 평균)를 시각화
+    3개 모델의 FPS와 F2-Score를 바탕으로 FASI를 시각화
     device_label: 'CPU' 또는 'GPU' 등이면 제목·파일명에 반영 (예: _cpu.png)
     """
     n = len(model_names)
     # 비교 셀을 여러 번 실행하면 리스트가 쌓이므로, 항상 마지막 n개만 사용
     f2_scores = np.asarray(f2_scores, dtype=float).flatten()[-n:]
     fps_list = np.asarray(fps_list, dtype=float).flatten()[-n:]
+
     if len(f2_scores) != n or len(fps_list) != n:
         raise ValueError(f"f2_scores와 fps_list는 model_names 개수({n})와 같아야 합니다. 노트북에서 '초기화 셀' 실행 후 모델 3개 학습 셀을 각각 한 번만 실행하세요.")
+    
     # 정규화 (최대 FPS 기준)
     max_fps = float(np.max(fps_list))
     fps_norm = (fps_list / max_fps).tolist()
     
-    # E-Score 계산 (알파 값 적용)
-    e_scores = [ (alpha * f2) + ((1 - alpha) * fn) for f2, fn in zip(f2_scores, fps_norm) ]
+    # FASI 계산 (알파 값 적용)
+    FASI = [ (alpha * f2) + ((1 - alpha) * fn) for f2, fn in zip(f2_scores, fps_norm) ]
     
     plt.figure(figsize=(9, 6))
     colors = ['purple', 'orange', 'teal']
     
     for i in range(len(model_names)):
-        plt.scatter(fps_list[i], f2_scores[i], color=colors[i], s=200, label=f"{model_names[i].upper()} (E-Score: {e_scores[i]:.3f})")
+        plt.scatter(fps_list[i], f2_scores[i], color=colors[i], s=200, label=f"{model_names[i].upper()} (FASI: {FASI[i]:.4f})")
         plt.text(fps_list[i], f2_scores[i] + 0.005, model_names[i].upper(), fontsize=12, ha='center', fontweight='bold')
     
     title_suffix = f' ({device_label})' if device_label else ''
@@ -117,21 +123,25 @@ def plot_model_comparison_pareto(model_names, f2_scores, fps_list, alpha, save_d
 
 def plot_model_comparison_bar(model_names, f2_scores, fps_list, alpha, save_dir, device_label=None):
     """
-    3개 모델의 F2-Score, 정규화된 FPS, 종합 E-Score를 그룹 막대 그래프로 비교
+    3개 모델의 F2-Score, 정규화된 FPS, 종합 FASI를 그룹 막대 그래프로 비교
     device_label: 'CPU' 또는 'GPU' 등이면 제목·파일명에 반영
+    - x축: 모델들
+    - y축: f2, fps, FASI
     """
     n = len(model_names)
     # 비교 셀을 여러 번 실행하면 리스트가 쌓이므로, 항상 마지막 n개만 사용
     f2_scores = np.asarray(f2_scores, dtype=float).flatten()[-n:]
     fps_list = np.asarray(fps_list, dtype=float).flatten()[-n:]
+
     if len(f2_scores) != n or len(fps_list) != n:
         raise ValueError(f"f2_scores와 fps_list는 model_names 개수({n})와 같아야 합니다. 현재 len(f2_scores)={len(f2_scores)}, len(fps_list)={len(fps_list)}. 노트북에서 '초기화 셀'을 실행한 뒤 모델 3개 학습 셀을 각각 한 번만 실행하세요.")
-    # 1. 수치 계산 (정규화 및 E-Score)
+    
+    # FPS 정규화 
     max_fps = float(np.max(fps_list))
     fps_norm = (fps_list / max_fps).tolist()
 
-    # E-Score: F2와 FPS_norm의 가중 산술 평균 (알파 값 적용)
-    e_scores = [ (alpha * f2) + ((1 - alpha) * fn) for f2, fn in zip(f2_scores, fps_norm) ]
+    # FASI: F2와 FPS_norm의 가중 산술 평균 (알파 값 적용)
+    FASI = [ (alpha * f2) + ((1 - alpha) * fn) for f2, fn in zip(f2_scores, fps_norm) ]
 
     # 2. 막대 그래프 세팅
     x = np.arange(n)
@@ -142,15 +152,16 @@ def plot_model_comparison_bar(model_names, f2_scores, fps_list, alpha, save_dir,
     # 3. n개의 막대 그리기 (길이 n인 리스트만 전달)
     f2_plot = f2_scores.tolist() if hasattr(f2_scores, 'tolist') else list(f2_scores)
     fps_norm_plot = fps_norm if isinstance(fps_norm, list) else list(fps_norm)
-    e_scores_plot = list(e_scores)
+    FASI_plot = list(FASI)
+    
     rects1 = ax.bar(x - width, f2_plot, width, label='F2-Score', color='royalblue')
     rects2 = ax.bar(x, fps_norm_plot, width, label='FPS', color='mediumseagreen')
-    rects3 = ax.bar(x + width, e_scores_plot, width, label=f'E-Score (α={alpha})', color='darkorange')
+    rects3 = ax.bar(x + width, FASI_plot, width, label=f'FASI (α={alpha})', color='darkorange')
 
     # 4. 그래프 꾸미기
     title_suffix = f' ({device_label})' if device_label else ''
     ax.set_ylabel('Scores (0.0 ~ 1.0 Scale)', fontsize=12)
-    ax.set_title(f'Model Performance Comparison (F2, FPS, E-Score){title_suffix}', fontsize=16, fontweight='bold')
+    ax.set_title(f'Model Performance Comparison (F2, FPS, FASI){title_suffix}', fontsize=16, fontweight='bold')
     ax.set_xticks(x)
     ax.set_xticklabels([name.upper() for name in model_names], fontsize=12, fontweight='bold')
     ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1), fontsize=11) # 범례를 그래프 바깥으로 빼서 가리지 않게 함
@@ -163,8 +174,8 @@ def plot_model_comparison_bar(model_names, f2_scores, fps_list, alpha, save_dir,
     def autolabel(rects, real_values, is_fps=False):
         for rect, val in zip(rects, real_values):
             height = rect.get_height()
-            # FPS면 '45 FPS' 처럼 쓰고, 아니면 '0.952' 처럼 소수점 3자리로 씀
-            text_str = f"{val:.1f} FPS" if is_fps else f"{val:.3f}"
+            # FPS면 '45 FPS' 처럼 쓰고, 아니면 '0.952' 처럼 소수점 4자리로 씀
+            text_str = f"{val:.1f} FPS" if is_fps else f"{val:.4f}"
             ax.annotate(text_str,
                         xy=(rect.get_x() + rect.get_width() / 2, height),
                         xytext=(0, 3),  # 막대 위로 3포인트 띄움
@@ -173,7 +184,7 @@ def plot_model_comparison_bar(model_names, f2_scores, fps_list, alpha, save_dir,
 
     autolabel(rects1, f2_plot)
     autolabel(rects2, (fps_list.tolist() if hasattr(fps_list, 'tolist') else list(fps_list)), is_fps=True)
-    autolabel(rects3, e_scores_plot)
+    autolabel(rects3, FASI_plot)
 
     plt.tight_layout()
     name_suffix = f'_{device_label.lower()}' if device_label else ''
@@ -271,6 +282,10 @@ def show_gradcam_grid(model, test_transform, base_dir, device, save_dir, model_n
 # 
 def plot_confusion_matrix(y_true, y_pred, class_names, save_dir, model_name="Model"):
     cm = confusion_matrix(y_true, y_pred)
+    test_report = classification_report(y_true, y_pred, target_names=class_names, output_dict=True)
+    test_precision = test_report.get('1', {}).get('precision', 0.0)
+    test_recall = test_report.get('1', {}).get('recall', 0.0)
+    test_f2 = 5 * test_precision * test_recall / (4 * test_precision + test_recall)
 
     plt.figure(figsize=(6, 5)) # 그래프 세팅
 
@@ -288,6 +303,13 @@ def plot_confusion_matrix(y_true, y_pred, class_names, save_dir, model_name="Mod
     save_path = os.path.join(save_dir, f'{model_name}_confusion_matrix.png')
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.show()
+
+    print(f'{model_name} Test에 대한 Precision: {test_precision:.4f}')
+    print(f'{model_name} Test에 대한 Recall: {test_recall:.4f}')
+    print(f'{model_name} Test에 대한 F2-Score: {test_f2:.4f}')
+
+    return test_precision, test_recall, test_f2
+
 
 
 def plot_gamma_sweep(gamma_map, model_name, save_dir):
@@ -312,6 +334,10 @@ def plot_gamma_sweep(gamma_map, model_name, save_dir):
 
 
 def plot_weight_sweep(weight_map, model_name, save_dir):
+    """
+    - x: weight
+    - y: 평균 f2-score, 표준편차
+    """
     weights = list(weight_map.keys())
     means  = [np.mean(v) for v in weight_map.values()]
     stds   = [np.std(v)  for v in weight_map.values()]
@@ -329,3 +355,28 @@ def plot_weight_sweep(weight_map, model_name, save_dir):
     path = os.path.join(save_dir, f'{model_name}_bad_class_weight_sweep.png')
     plt.savefig(path, dpi=300, bbox_inches='tight')
     plt.show()
+
+
+# 
+def display_db_as_dataframe(model_name, db: dict):
+    records = []
+
+    for w, folds in db.items():
+        for f, metrics in folds.items():
+            records.append({
+                'Weight': w,
+                'Fold': f,
+                'Train Loss': metrics['train_loss'],
+                'Val Loss': metrics['val_loss'],
+                'Best Epoch': metrics['best_epoch'],
+                'Best F2': metrics['best_f2'],
+            })
+
+    print(f"\n[{model_name} 실험 결과 요약]")
+    df = pd.DataFrame(records)
+    df['Best F2'] = df['Best F2'].apply(lambda x: f"{x:.4f}" if isinstance(x, float) else x)
+    
+    display(df)
+
+    df.to_excel(f'{model_name}_db_output.xlsx', index=False)
+    print(f"저장: {model_name}_db_output.xlsx")

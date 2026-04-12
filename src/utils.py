@@ -11,6 +11,7 @@ def set_seed(seed=42):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
+
 def make_run_dir(base_path='./outputs'):
     """학습을 돌릴 때마다 고유한 실험 폴더를 생성합니다."""
     now = datetime.now().strftime('%Y%m%d_%H%M%S')
