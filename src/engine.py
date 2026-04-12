@@ -290,8 +290,9 @@ def run_kfold_experiment(model_name, all_paths, all_labels_np,
     bad_weight_list = bad_weight_list
 
     weights_dir = run_dirs.get('weights', './outputs/')
-    model_save_dir = os.path.join(weights_dir, 'weights')
-    os.makedirs(model_save_dir, exist_ok=True)
+    os.makedirs(weights_dir, exist_ok=True)
+    # model_save_dir = os.path.join(weights_dir, 'weights')
+    # os.makedirs(model_save_dir, exist_ok=True)
 
     print(f"\n{'='*60}")
     print(f"모델: {model_name.upper()} | {n_splits}-Fold CV | bad_weight sweep: {bad_weight_list}")
@@ -429,7 +430,7 @@ def run_kfold_experiment(model_name, all_paths, all_labels_np,
             
             # 여기서부터 좀 어려움
             if best_state is not None:
-                temp_path = os.path.join(model_save_dir, f"temp_w{w}_fold{fold_idx+1}.pth")
+                temp_path = os.path.join(weights_dir, f"temp_w{w}_fold{fold_idx+1}.pth")
                 torch.save(best_state, temp_path)
                 current_w_paths.append(temp_path)
         
@@ -473,7 +474,7 @@ def run_kfold_experiment(model_name, all_paths, all_labels_np,
         if i != best_fold_idx and os.path.exists(p):
             os.remove(p)
         
-    ultimate_champion_path = os.path.join(model_save_dir, f"{model_name}_CHAMPION_w{champion_weight}_fold{best_fold_idx+1}.pth")
+    ultimate_champion_path = os.path.join(weights_dir, f"{model_name}_CHAMPION_w{champion_weight}_fold{best_fold_idx+1}.pth")
     os.rename(final_best_path, ultimate_champion_path)
             
     print(f"\n[{model_name} 최종] Weight: {champion_weight} / Fold: {best_fold_idx+1} (F2 Score: {best_single_f2:.4f})")
