@@ -1,20 +1,50 @@
-# Screw Defect Detection
+# 딥러닝 기반 나사 결함 탐지 모델 성능 비교
 
-나사(Screw) 이미지를 이용한 불량 검출 이진 분류 시스템. <br>
-졸업논문 연구 프로젝트.
+나사(Screw) 이미지를 이용한 불량 검출 이진 분류 시스템. <br>졸업논문 연구 프로젝트.
 
 ## 개요
 
 산업 현장에서 발생하는 나사 불량을 딥러닝 기반 이미지 분류로 자동 검출합니다.  
-불량 미검출(False Negative)을 최소화하는 것이 핵심 목표이며, 이를 위해 **F2-Score**를 주요 평가 지표로 사용합니다.
+불량 미검출(False Negative)을 최소화하는 것이 핵심 목표이며, **F2-Score**를 주요 평가 지표로 사용합니다.
 
+- **데이터셋**: Kaggle 'Screw Anomalies Detection' (480장)
 - **입력**: 나사 이미지 (정상 / 불량 5개 유형)
 - **출력**: Good(0) / Bad(1) 이진 분류
 - **핵심 문제**: 클래스 불균형 (Good 325장 vs Bad 100장) + 불량 미검출 최소화
 
+### 불량 유형
+
+| 유형 | 설명 |
+|------|------|
+| Type 1 | 나사끝 휘어짐 / 끊어짐 |
+| Type 2 | 나사머리 깨짐 |
+| Type 3 | 나사목 깨짐 |
+| Type 4 | 나사산 깨짐 (측면) |
+| Type 5 | 나사산 깨짐 (상단) |
+
+## 실험 결과
+
+### 최종 테스트 성능 (Test set: 55장)
+
+| 모델 | Precision | Recall | F2-Score | FPS | FASI |
+|------|-----------|--------|----------|-----|------|
+| **ResNet-18** | **0.9500** | **1.0000** | **0.9896** | **88.8** | **0.9927** |
+| MobileNet-V2 | 0.8571 | 0.6316 | 0.6667 | 82.9 | 0.7468 |
+| VGG-16 | 0.3333 | 0.5789 | 0.5046 | 24.2 | 0.4373 |
+
+**ResNet-18**이 F2-Score, Recall, FASI 모든 지표에서 최고 성능을 기록하여 최종 모델로 선정되었습니다.
+
+### Grid Search 챔피언 가중치
+
+| 모델 | Best bad_weight |
+|------|-------------------|
+| ResNet-18 | 2.0 |
+| MobileNet-V2 | 2.5 |
+| VGG-16 | 5.0 |
+
 ## 모델
 
-ImageNet pretrained 백본 3종을 비교 실험합니다.
+ImageNet pretrained 백본 3종을 비교 실험합니다. 헤드 레이어만 교체 후 전체 파라미터 파인튜닝.
 
 | 모델 | 교체 레이어 | 파라미터 수 |
 |------|------------|------------|
@@ -25,33 +55,43 @@ ImageNet pretrained 백본 3종을 비교 실험합니다.
 ## 방법론
 
 ### 클래스 불균형 처리
-`CrossEntropyLoss(weight=[1.0, bad_weight])`로 불량 클래스 손실을 가중하여 보정.  
-`bad_weight`는 1.0~5.0 범위를 Grid Search로 탐색.
+- `CrossEntropyLoss(weight=[1.0, bad_weight])` — 불량 클래스 손실 가중치 부여
+- `bad_weight`는 1.0~5.0 범위를 Grid Search로 탐색
 
 ### 학습 전략
-- **Stratified 5-Fold Cross Validation** — 소규모 데이터셋의 평가 신뢰도 확보
-- **하이퍼파라미터(bad_weight) 선택**: `MAX mean F2`로 안정적인 weight 선정
-- **조기 종료**: F2-Score 기준 (val loss 아닌 최적화 목표 기준)
-- **Optimizer**: Adam (lr=1e-4)
+- **Stratified 5-Fold Cross Validation** — 소규모 데이터셋 평가 신뢰도 확보
+- **Best weight 선택**: `MAX mean F2` 기준
+- **Early Stopping**: F2-Score 기준 (patience=10)
+- **Optimizer**: AdamW (lr=1e-4, weight_decay=1e-2)
 
 ### 평가 지표
+
 ```
 F2-Score = 5 × Precision × Recall / (4 × Precision + Recall)
-FASI = α × F2 + (1-α) × FPS_normalized   (α=0.7, 속도-성능 복합 지표)
+FASI     = α·F2 + (1-α)·FPS_normalized   (α=0.7)
 ```
+
+- **F2-Score**: Recall에 높은 가중치 — 불량 미검출 최소화
+- **FASI**: 산업 현장 배포를 위한 성능·속도 복합 지표
+
+## 실험 환경
+
+- **CPU**: Intel Core Ultra 9 285K
+- **GPU**: NVIDIA RTX 5080
+- **Python**: 3.10.20 / **PyTorch**: 2.10.0 (cu128)
 
 ## 데이터셋 구조
 
 ```
 data/new_k-fold_data/
-├── train/
+├── train/                 (총 425장)
 │   ├── good/    (325장)
 │   ├── type1/   (20장)
 │   ├── type2/   (20장)
 │   ├── type3/   (20장)
 │   ├── type4/   (20장)
 │   └── type5/   (20장)
-└── test/
+└── test/                  (총 55장)
     ├── good/    (36장)
     ├── type1/   (4장)
     ├── type2/   (4장)
@@ -60,7 +100,8 @@ data/new_k-fold_data/
     └── type5/   (3장)
 ```
 
-type1~5는 학습 시 모두 `label=1 (bad)`로 병합됩니다.
+type1~5는 학습 시 모두 `label=1 (bad)`로 병합됩니다.  
+데이터 분할: Train 340 / Val 85 / Test 55
 
 ## 설치
 
@@ -72,14 +113,15 @@ pip install torch torchvision numpy scikit-learn pytorch-grad-cam matplotlib sea
 
 ## 실행
 
-`main.ipynb`를 Jupyter에서 순차 실행합니다.
+`main6.ipynb`를 Jupyter에서 순차 실행합니다.
 
 ```
-main.ipynb
-  ├─ 데이터 로드
+main6.ipynb
+  ├─ 데이터 로드 및 전처리
   ├─ Grid Search + 5-Fold CV (모델별)
   │    └─ bad_weight sweep → Champion weight 선정
-  ├─ 최적 weight로 최종 학습 및 테스트 평가
+  │    └─ 임계값 튜닝 (val softmax 확률 기반)
+  ├─ 최적 weight·threshold로 테스트 평가
   └─ 시각화 (Confusion Matrix, Grad-CAM, Weight Sweep 비교)
 ```
 
@@ -89,12 +131,13 @@ main.ipynb
 
 ```
 screw_defect/
-├── main.ipynb              # 메인 실험 노트북
+├── main6.ipynb                 # 메인 실험 노트북
 ├── src/
-│   ├── dataset.py          # ScrewDataset, 전처리 transform
-│   ├── engine.py           # 학습 루프, Grid Search, 추론 속도 측정
-│   ├── model.py            # build_model_bin() (ResNet/MobileNet/VGG)
-│   ├── visualization.py    # 시각화 함수 (Grad-CAM, Confusion Matrix 등)
-│   └── utils.py            # set_seed(), make_run_dir()
-└── data/                   # 데이터셋 (git 미포함)
+│   ├── dataset.py              # ScrewDataset, get_image_paths_and_labels(), transform
+│   ├── improved_kfold.py       # run_kfold_experiment_improved() — 핵심 학습 함수
+│   ├── engine.py               # 추론 속도 측정, run_grid_search_with_kfold_cv()
+│   ├── model.py                # build_model_bin() (ResNet/MobileNet/VGG)
+│   ├── visualization.py        # Grad-CAM, Confusion Matrix, Weight Sweep 시각화
+│   └── utils.py                # set_seed(), make_run_dir()
+└── data/                       # 데이터셋 (git 미포함)
 ```
