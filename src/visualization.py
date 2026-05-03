@@ -8,193 +8,11 @@ from pytorch_grad_cam import GradCAM
 from pytorch_grad_cam.utils.image import show_cam_on_image
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 import torchvision.transforms as transforms
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import confusion_matrix, fbeta_score, classification_report
 import seaborn as sns
-import pandas as pd
-from sklearn.metrics import classification_report
-
-# ========================================================
-# 1. 학습 로스 추이 그래프 (에포크 / train loss, val loss)
-# ========================================================
-def plot_loss_history(train_loss, val_loss, save_dir, model_name="Model"):
-    """
-    - 최고 성능을 낸 모델의 에포크별 loss 추이 그래프
-    - x: 에포크
-    - y: loss (train, val)
-    """
-    epochs = range(1, len(train_loss) + 1)
-
-    plt.figure(figsize=(8, 5))
-    plt.plot(epochs, train_loss, marker='', linestyle='-', label='Train Loss', color='blue', linewidth=2)
-    plt.plot(epochs, val_loss, marker='', linestyle='-', label='Val Loss', color='orange', linewidth=2)
-
-    plt.title(f'{model_name.upper()} Loss Curve (Best Model)', fontsize=16, fontweight='bold', pad=15)
-    plt.xlabel('Epoch', fontsize=14, fontweight='bold')
-    plt.ylabel('Loss', fontsize=14, fontweight='bold')
-    plt.grid(True, linestyle='--', alpha=0.7)
-    plt.legend(loc='upper right', fontsize=12)
-
-    plt.tight_layout()
-    save_path = os.path.join(save_dir, f'{model_name}_loss_curve.png')
-    plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    plt.show()
-
-
-# ============================================================================
-# 2. 가중치 스윕 트레이드 오프 그래프 (bad weight / recall, precision, f1, f2)
-# ============================================================================
-def plot_weight_tradeoff(weights, recalls, f1s, f2s, save_dir, model_name='Model'):
-    """
-    가중치 변화에 따른 recall, f1, f2 변화
-    weights: bad class weight 리스트 (예: np.arange(1.0, 10.5, 0.5).tolist())
-    """
-    weights = list(weights)
-    plt.figure(figsize=(10, 6))
-    plt.plot(weights, recalls, marker='o', label='Recall', color='red')
-    plt.plot(weights, f1s, marker='o', label='F1-Score', color='green')
-    plt.plot(weights, f2s, marker='o', label='F2-Score', color='blue')
-
-    plt.title(f'{model_name.upper()} - Metric by Class Weight', fontsize=16, fontweight='bold')
-    plt.xlabel('Bad Class Weight', fontsize=12)
-    plt.ylabel('Score (0.0 ~ 1.0)', fontsize=12)
-    plt.xticks(weights)
-    plt.legend(fontsize=12)
-    plt.grid(True, linestyle='--', alpha=0.7)
-
-    max_f2_idx = np.argmax(f2s)
-    optimal_weight = weights[max_f2_idx]
-    max_f2 = f2s[max_f2_idx]
-
-    plt.annotate(f'Optimal Weight: {optimal_weight}\n Max F2 : {max_f2:.4f}', 
-                 xy=(optimal_weight, max_f2),
-                 xytext=(optimal_weight, max_f2 + 0.05),
-                 arrowprops=dict(facecolor='black', shrink=0.05, width=1.5, headwidth=8),
-                 fontsize=12, fontweight='bold', ha='center')
-    
-    plt.tight_layout()
-    save_path = os.path.join(save_dir, f'{model_name}_weight_tradeoff.png')
-    plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    plt.show()
-
-
-# ==================
-# 3. 파레토 프론티어 
-# ==================
-def plot_model_comparison_pareto(model_names, f2_scores, fps_list, alpha, save_dir, device_label=None):
-    """
-    3개 모델의 FPS와 F2-Score를 바탕으로 FASI를 시각화
-    device_label: 'CPU' 또는 'GPU' 등이면 제목·파일명에 반영 (예: _cpu.png)
-    """
-    n = len(model_names)
-    # 비교 셀을 여러 번 실행하면 리스트가 쌓이므로, 항상 마지막 n개만 사용
-    f2_scores = np.asarray(f2_scores, dtype=float).flatten()[-n:]
-    fps_list = np.asarray(fps_list, dtype=float).flatten()[-n:]
-
-    if len(f2_scores) != n or len(fps_list) != n:
-        raise ValueError(f"f2_scores와 fps_list는 model_names 개수({n})와 같아야 합니다. 노트북에서 '초기화 셀' 실행 후 모델 3개 학습 셀을 각각 한 번만 실행하세요.")
-    
-    # 정규화 (최대 FPS 기준)
-    max_fps = float(np.max(fps_list))
-    fps_norm = (fps_list / max_fps).tolist()
-    
-    # FASI 계산 (알파 값 적용)
-    FASI = [ (alpha * f2) + ((1 - alpha) * fn) for f2, fn in zip(f2_scores, fps_norm) ]
-    
-    plt.figure(figsize=(9, 6))
-    colors = ['purple', 'orange', 'teal']
-    
-    for i in range(len(model_names)):
-        plt.scatter(fps_list[i], f2_scores[i], color=colors[i], s=200, label=f"{model_names[i].upper()} (FASI: {FASI[i]:.4f})")
-        plt.text(fps_list[i], f2_scores[i] + 0.005, model_names[i].upper(), fontsize=12, ha='center', fontweight='bold')
-    
-    title_suffix = f' ({device_label})' if device_label else ''
-    plt.title(f'Pareto Frontier: FPS vs F2-Score (α={alpha}){title_suffix}', fontsize=16, fontweight='bold')
-    plt.xlabel('Inference Speed (FPS)', fontsize=12)
-    plt.ylabel('F2-Score', fontsize=12)
-    plt.legend(loc='lower right', fontsize=11)
-    plt.grid(True, linestyle='--', alpha=0.7)
-    
-    plt.tight_layout()
-    name_suffix = f'_{device_label.lower()}' if device_label else ''
-    save_path = os.path.join(save_dir, f'model_pareto_comparison{name_suffix}.png')
-    plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    plt.show()
-
-
-def plot_model_comparison_bar(model_names, f2_scores, fps_list, alpha, save_dir, device_label=None):
-    """
-    3개 모델의 F2-Score, 정규화된 FPS, 종합 FASI를 그룹 막대 그래프로 비교
-    device_label: 'CPU' 또는 'GPU' 등이면 제목·파일명에 반영
-    - x축: 모델들
-    - y축: f2, fps, FASI
-    """
-    n = len(model_names)
-    # 비교 셀을 여러 번 실행하면 리스트가 쌓이므로, 항상 마지막 n개만 사용
-    f2_scores = np.asarray(f2_scores, dtype=float).flatten()[-n:]
-    fps_list = np.asarray(fps_list, dtype=float).flatten()[-n:]
-
-    if len(f2_scores) != n or len(fps_list) != n:
-        raise ValueError(f"f2_scores와 fps_list는 model_names 개수({n})와 같아야 합니다. 현재 len(f2_scores)={len(f2_scores)}, len(fps_list)={len(fps_list)}. 노트북에서 '초기화 셀'을 실행한 뒤 모델 3개 학습 셀을 각각 한 번만 실행하세요.")
-    
-    # FPS 정규화 
-    max_fps = float(np.max(fps_list))
-    fps_norm = (fps_list / max_fps).tolist()
-
-    # FASI: F2와 FPS_norm의 가중 산술 평균 (알파 값 적용)
-    FASI = [ (alpha * f2) + ((1 - alpha) * fn) for f2, fn in zip(f2_scores, fps_norm) ]
-
-    # 2. 막대 그래프 세팅
-    x = np.arange(n)
-    width = 0.25
-    
-    fig, ax = plt.subplots(figsize=(10, 6))
-
-    # 3. n개의 막대 그리기 (길이 n인 리스트만 전달)
-    f2_plot = f2_scores.tolist() if hasattr(f2_scores, 'tolist') else list(f2_scores)
-    fps_norm_plot = fps_norm if isinstance(fps_norm, list) else list(fps_norm)
-    FASI_plot = list(FASI)
-    
-    rects1 = ax.bar(x - width, f2_plot, width, label='F2-Score', color='royalblue')
-    rects2 = ax.bar(x, fps_norm_plot, width, label='FPS', color='mediumseagreen')
-    rects3 = ax.bar(x + width, FASI_plot, width, label=f'FASI (α={alpha})', color='darkorange')
-
-    # 4. 그래프 꾸미기
-    title_suffix = f' ({device_label})' if device_label else ''
-    ax.set_ylabel('Scores (0.0 ~ 1.0 Scale)', fontsize=12)
-    ax.set_title(f'Model Performance Comparison (F2, FPS, FASI){title_suffix}', fontsize=16, fontweight='bold')
-    ax.set_xticks(x)
-    ax.set_xticklabels([name.upper() for name in model_names], fontsize=12, fontweight='bold')
-    ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1), fontsize=11) # 범례를 그래프 바깥으로 빼서 가리지 않게 함
-
-    # y축 범위를 0 ~ 1.2 정도로 살짝 늘려서 텍스트가 잘리지 않게 함
-    ax.set_ylim(0, 1.2)
-    ax.grid(axis='y', linestyle='--', alpha=0.7)
-
-    # 5. 막대 위에 수치 적어주기
-    def autolabel(rects, real_values, is_fps=False):
-        for rect, val in zip(rects, real_values):
-            height = rect.get_height()
-            # FPS면 '45 FPS' 처럼 쓰고, 아니면 '0.952' 처럼 소수점 4자리로 씀
-            text_str = f"{val:.1f} FPS" if is_fps else f"{val:.4f}"
-            ax.annotate(text_str,
-                        xy=(rect.get_x() + rect.get_width() / 2, height),
-                        xytext=(0, 3),  # 막대 위로 3포인트 띄움
-                        textcoords="offset points",
-                        ha='center', va='bottom', fontsize=10, fontweight='bold')
-
-    autolabel(rects1, f2_plot)
-    autolabel(rects2, (fps_list.tolist() if hasattr(fps_list, 'tolist') else list(fps_list)), is_fps=True)
-    autolabel(rects3, FASI_plot)
-
-    plt.tight_layout()
-    name_suffix = f'_{device_label.lower()}' if device_label else ''
-    save_path = os.path.join(save_dir, f'model_comparison_barchart{name_suffix}.png')
-    plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    plt.show()
-
 
 # ==============================
-# 4. Grad-CAM 5x10 그리드 시각화
+# Grad-CAM 5x10 그리드 시각화
 # ==============================
 def show_gradcam_grid(model, test_transform, base_dir, device, save_dir, model_name='Model'):
     """
@@ -216,12 +34,12 @@ def show_gradcam_grid(model, test_transform, base_dir, device, save_dir, model_n
     )
 
     row_configs = [
-        {'label': 'Good',   'dir': f'{base_dir}/good', 'prefix': 'good',  'true_idx': 0},
-        {'label': 'Type 1', 'dir': f'{base_dir}/type1',  'prefix': 'type1', 'true_idx': 1},
-        {'label': 'Type 2', 'dir': f'{base_dir}/type2',  'prefix': 'type2', 'true_idx': 2},
-        {'label': 'Type 3', 'dir': f'{base_dir}/type3',  'prefix': 'type3', 'true_idx': 3},
-        {'label': 'Type 4', 'dir': f'{base_dir}/type4',  'prefix': 'type4', 'true_idx': 4},
-        {'label': 'Type 5', 'dir': f'{base_dir}/type5',  'prefix': 'type5', 'true_idx': 5},
+        {'label': 'Good',   'dir': f'./data/new_k-fold_data/{base_dir}/good', 'prefix': 'good',  'true_idx': 0},
+        {'label': 'Type 1', 'dir': f'./data/new_k-fold_data/{base_dir}/type1',  'prefix': 'type1', 'true_idx': 1},
+        {'label': 'Type 2', 'dir': f'./data/new_k-fold_data/{base_dir}/type2',  'prefix': 'type2', 'true_idx': 1},
+        {'label': 'Type 3', 'dir': f'./data/new_k-fold_data/{base_dir}/type3',  'prefix': 'type3', 'true_idx': 1},
+        {'label': 'Type 4', 'dir': f'./data/new_k-fold_data/{base_dir}/type4',  'prefix': 'type4', 'true_idx': 1},
+        {'label': 'Type 5', 'dir': f'./data/new_k-fold_data/{base_dir}/type5',  'prefix': 'type5', 'true_idx': 1},
     ]
 
     fig, axes = plt.subplots(nrows=6, ncols=3, figsize=(10, 14)) 
@@ -229,7 +47,13 @@ def show_gradcam_grid(model, test_transform, base_dir, device, save_dir, model_n
 
     for row, config in enumerate(row_configs):
         current_dir = config['dir']
-        all_files = [f for f in os.listdir(current_dir) if f.startswith(config['prefix']) and f.endswith('.png')]
+
+        valid_exts = ('.png', '.jpg', '.jpeg', '.bmp', '.webp')
+        all_files = [f for f in os.listdir(current_dir) if f.lower().endswith(valid_exts)]
+
+        if len(all_files) == 0:
+            print(f"[경고] '{current_dir}' 경로에서 이미지를 하나도 찾지 못함")
+            continue # 다음 행으로 넘어감
         
         # 사진 3장 랜덤 추출
         sample_size = min(3, len(all_files))
@@ -247,10 +71,10 @@ def show_gradcam_grid(model, test_transform, base_dir, device, save_dir, model_n
                     output = model(input_tensor)
                     pred_idx = torch.argmax(output, dim=1).item()
                     
-                pred_text = "Pred: GOOD" if pred_idx == 1 else "Pred: BAD"
+                pred_text = "Pred: GOOD" if pred_idx == 0 else "Pred: BAD"
                 text_color = "lime" if pred_idx == config['true_idx'] else "red"
                 
-                targets = [ClassifierOutputTarget(0)] 
+                targets = [ClassifierOutputTarget(config['true_idx'])] 
                 inv_tensor = inv_normalize(input_tensor.squeeze(0))
                 vis_img_np = np.clip(inv_tensor.cpu().numpy().transpose((1, 2, 0)), 0, 1)
 
@@ -283,9 +107,9 @@ def show_gradcam_grid(model, test_transform, base_dir, device, save_dir, model_n
 def plot_confusion_matrix(y_true, y_pred, class_names, save_dir, model_name="Model"):
     cm = confusion_matrix(y_true, y_pred)
     test_report = classification_report(y_true, y_pred, target_names=class_names, output_dict=True)
-    test_precision = test_report.get('1', {}).get('precision', 0.0)
-    test_recall = test_report.get('1', {}).get('recall', 0.0)
-    test_f2 = 5 * test_precision * test_recall / (4 * test_precision + test_recall)
+    test_precision = test_report.get('bad', {}).get('precision', 0.0)
+    test_recall = test_report.get('bad', {}).get('recall', 0.0)
+    test_f2 = fbeta_score(y_true, y_pred, beta=2, zero_division=0)
 
     plt.figure(figsize=(6, 5)) # 그래프 세팅
 
@@ -311,73 +135,131 @@ def plot_confusion_matrix(y_true, y_pred, class_names, save_dir, model_name="Mod
     return test_precision, test_recall, test_f2
 
 
-
-def plot_gamma_sweep(gamma_map, model_name, save_dir):
-    gammas = list(gamma_map.keys())
-    means  = [np.mean(v) for v in gamma_map.values()]
-    stds   = [np.std(v)  for v in gamma_map.values()]
-
-    plt.figure(figsize=(8, 5))
-    plt.errorbar(gammas, means, yerr=stds, marker='o', linewidth=2,
-                 capsize=5, label='mean ± std (5-fold)')
-    plt.xlabel('Focal Loss gamma', fontsize=12)
-    plt.ylabel('Macro F2-Score (결함 클래스)', fontsize=12)
-    plt.title(f'{model_name.upper()} — Gamma Sweep', fontsize=14, fontweight='bold')
-    plt.xticks(gammas)
-    plt.grid(True, linestyle='--', alpha=0.7)
-    plt.legend()
-    plt.tight_layout()
-    path = os.path.join(save_dir, f'{model_name}_gamma_sweep.png')
-    plt.savefig(path, dpi=300, bbox_inches='tight')
-    plt.show()
-    print(f"저장: {path}")
-
-
-def plot_weight_sweep(weight_map, model_name, save_dir):
+def plot_all_models_weight_vs_f2(all_models_results, save_path="./outputs/"):
     """
-    - x: weight
-    - y: 평균 f2-score, 표준편차
-    """
-    weights = list(weight_map.keys())
-    means  = [np.mean(v) for v in weight_map.values()]
-    stds   = [np.std(v)  for v in weight_map.values()]
-
-    plt.figure(figsize=(8, 5))
-    plt.errorbar(weights, means, yerr=stds, marker='o', linewidth=2,
-                 capsize=5, label='mean ± std (5-fold)')
-    plt.xlabel('Bad Class Weight', fontsize=12)
-    plt.ylabel('F2-Score (Bad Class)', fontsize=12)
-    plt.title(f'{model_name.upper()} — Bad Class Weight Sweep', fontsize=14, fontweight='bold')
-    plt.xticks(weights)
-    plt.grid(True, linestyle='--', alpha=0.7)
-    plt.legend()
-    plt.tight_layout()
-    path = os.path.join(save_dir, f'{model_name}_bad_class_weight_sweep.png')
-    plt.savefig(path, dpi=300, bbox_inches='tight')
-    plt.show()
-
-
-# 
-def display_db_as_dataframe(model_name, db: dict, save_dir):
-    records = []
-
-    for w, folds in db.items():
-        for f, metrics in folds.items():
-            records.append({
-                'Weight': w,
-                'Fold': f,
-                'Train Loss': metrics['train_loss'],
-                'Val Loss': metrics['val_loss'],
-                'Best Epoch': metrics['best_epoch'],
-                'Best F2': metrics['best_f2'],
-            })
-
-    print(f"\n[{model_name} 실험 결과 요약]")
-    df = pd.DataFrame(records)
-    df['Best F2'] = df['Best F2'].apply(lambda x: f"{x:.4f}" if isinstance(x, float) else x)
+    모든 모델을 한 그래프에 표시
     
-    display(df)
-
-    path = os.path.join(save_dir, f'{model_name}_db_output.xlsx')
-    df.to_excel(path, index=False)
-    print(f"저장: {path}")
+    Args:
+        all_models_results = {
+            'VGG-16': {
+                'weight_f2': {2.0: [0.75, 0.73, ...], 2.5: [...], ...}
+            },
+            'ResNet-18': {
+                'weight_f2': {2.0: [0.79, 0.78, ...], ...}
+            },
+            'MobileNet-V2': {
+                'weight_f2': {2.0: [0.80, 0.81, ...], ...}
+            }
+        }
+    """    
+    fig, ax = plt.subplots(figsize=(12, 7))
+    
+    # 모델별 색상 & 마커
+    model_styles = {
+        'VGG-16': {
+            'color': '#FF6B6B',  # 빨강
+            'marker': 's',       # 사각형
+            'linestyle': '--'
+        },
+        'ResNet-18': {
+            'color': '#4ECDC4',  # 청록
+            'marker': '^',       # 삼각형
+            'linestyle': '-.'
+        },
+        'MobileNet-V2': {
+            'color': '#95E1D3',  # 연두
+            'marker': 'o',       # 원
+            'linestyle': '-'
+        }
+    }
+    
+    best_overall = {'model': None, 'weight': None, 'f2': 0}
+    
+    for model_name, model_data in all_models_results.items():
+        weight_f2 = model_data['weight_f2']
+        weights = sorted(weight_f2.keys())
+        
+        means = [np.mean(weight_f2[w]) for w in weights]
+        stds = [np.std(weight_f2[w]) for w in weights]
+        
+        style = model_styles.get(model_name, {'color': 'gray', 'marker': 'o', 'linestyle': '-'})
+        
+        # Line + Error bar
+        ax.errorbar(
+            weights, means, yerr=stds,
+            color=style['color'],
+            marker=style['marker'],
+            markersize=8,
+            linestyle=style['linestyle'],
+            linewidth=2,
+            capsize=5,
+            capthick=2,
+            label=model_name,
+            alpha=0.8
+        )
+        
+        # 이 모델의 best 찾기
+        best_idx = np.argmax(means)
+        if means[best_idx] > best_overall['f2']:
+            best_overall = {
+                'model': model_name,
+                'weight': weights[best_idx],
+                'f2': means[best_idx]
+            }
+    
+    # 전체 best 강조
+    if best_overall['model']:
+        best_model = best_overall['model']
+        best_weight = best_overall['weight']
+        best_f2 = best_overall['f2']
+        
+        ax.scatter(
+            best_weight, best_f2,
+            marker='*',
+            s=600,
+            c='gold',
+            edgecolors='red',
+            linewidths=2,
+            zorder=10,
+            label=f"Best: {best_model} @ {best_weight:.1f}"
+        )
+    
+    # 축 및 제목
+    ax.set_xlabel('Bad Class Weight', fontsize=14, fontweight='bold')
+    ax.set_ylabel('F2-score', fontsize=14, fontweight='bold')
+    ax.set_title('Model Performance Comparison: F2-score by Class Weight', 
+                fontsize=16, fontweight='bold', pad=20)
+    
+    # 범례
+    ax.legend(fontsize=11, loc='best', framealpha=0.9, shadow=True)
+    
+    # 그리드
+    ax.grid(True, alpha=0.3, linestyle='--')
+    ax.set_axisbelow(True)
+    
+    # X축 눈금
+    ax.set_xticks(weights)
+    
+    # Y축 범위 자동 조정 (여유 공간)
+    all_means = []
+    all_stds = []
+    for model_data in all_models_results.values():
+        weight_f2 = model_data['weight_f2']
+        for w in weight_f2.keys():
+            all_means.append(np.mean(weight_f2[w]))
+            all_stds.append(np.std(weight_f2[w]))
+    
+    y_min = min(all_means) - max(all_stds) - 0.02
+    y_max = max(all_means) + max(all_stds) + 0.02
+    ax.set_ylim(y_min, y_max)
+    
+    # 배경색 (선택사항)
+    ax.set_facecolor('#F8F9FA')
+    
+    plt.tight_layout()
+    plt.savefig(f"{save_path}/all_models_weight_vs_f2.png", 
+               dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    print(f"✅ Saved: all_models_weight_vs_f2.png")
+    print(f"   Best: {best_overall['model']} with F2={best_overall['f2']:.4f} at weight={best_overall['weight']:.1f}")

@@ -1,3 +1,6 @@
 *.pth
 *.pyc
 __pycache__/
+/outputs
+CLAUDE.md
+PROJECT_ANALYSIS.md

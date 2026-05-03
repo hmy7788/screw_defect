@@ -2,185 +2,17 @@ import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.optim import lr_scheduler
 import numpy as np
-import copy
-from sklearn.metrics import classification_report
-from src.model import build_model # model.py에서 가져옴
 import time
-from src.dataset import ScrewDataset
-
-# 모델 학습 및 평가
-def train_and_evaluate_model(model_name, dataloaders, dataset_sizes, class_names, device, run_dirs, num_epochs=40, use_amp=True, early_stop_patience=7):
-    """
-    use_amp: GPU일 때 Mixed Precision 사용 (속도·메모리 개선)
-    early_stop_patience: Val loss가 이 수의 epoch 동안 개선 없으면 해당 가중치 학습 조기 종료 (0이면 비활성화)
-    """
-    use_amp = use_amp and device.type == 'cuda'
-    if use_amp:
-        if hasattr(torch.amp, 'GradScaler'):
-            scaler = torch.amp.GradScaler('cuda')
-        else:
-            scaler = torch.cuda.amp.GradScaler()
-    else:
-        scaler = None
-
-    print(f"\n{'='*60}")
-    print(f"[ 시작 ] 모델 학습 및 평가: {model_name.upper()}" + (" [AMP ON]" if use_amp else ""))
-    print(f"{'='*60}")
-
-    bad_weights = np.arange(1.0, 10.5, 0.5).tolist()
-    
-    # Validation 기록용 리스트
-    val_bad_recalls, val_bad_f1s, val_f2_scores = [], [], []
-
-    best_f2 = -1.0 
-    best_model_weights = None
-    best_train_loss_history, best_val_loss_history = [], []
-    optimal_weight = 1.0
-
-    # 1단계: 가중치 탐색 스윕
-    for current_weight in bad_weights:
-        print(f"\n{'='*60}")
-        print(f"현재 탐색 중인 bad weight : {current_weight}")
-
-        current_train_loss_history = []
-        current_val_loss_history = []
-
-        # 매 가중치마다 새 모델과 옵티마이저 생성 (초기화)
-        model = build_model(model_name).to(device)
-        weights_tensor = torch.tensor([current_weight, 1.0], dtype=torch.float32).to(device)
-        criterion = nn.CrossEntropyLoss(weight=weights_tensor)
-        optimizer = optim.Adam(model.parameters(), lr=0.0001)
-        scheduler = lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
-
-        best_val_loss = float('inf')
-        epochs_no_improve = 0
-
-        for epoch in range(num_epochs):
-            # Train Phase (AMP 사용 시 autocast)
-            model.train()
-            running_loss = 0.0
-            for inputs, labels in dataloaders['train']:
-                inputs, labels = inputs.to(device), labels.to(device)
-                optimizer.zero_grad()
-                if use_amp:
-                    autocast_ctx = torch.amp.autocast('cuda') if hasattr(torch.amp, 'autocast') else torch.cuda.amp.autocast()
-                    with autocast_ctx:
-                        outputs = model(inputs)
-                        loss = criterion(outputs, labels)
-                    scaler.scale(loss).backward()
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    outputs = model(inputs)
-                    loss = criterion(outputs, labels)
-                    loss.backward()
-                    optimizer.step()
-                running_loss += loss.item() * inputs.size(0)
-            
-            scheduler.step()
-            train_epoch_loss = running_loss / dataset_sizes['train']
-            current_train_loss_history.append(train_epoch_loss)
-
-            # Validation Phase
-            model.eval()
-            val_running_loss = 0.0
-            with torch.no_grad():
-                for inputs, labels in dataloaders['val']:
-                    inputs, labels = inputs.to(device), labels.to(device)
-                    if use_amp:
-                        autocast_ctx = torch.amp.autocast('cuda') if hasattr(torch.amp, 'autocast') else torch.cuda.amp.autocast()
-                        with autocast_ctx:
-                            outputs = model(inputs)
-                            loss = criterion(outputs, labels)
-                    else:
-                        outputs = model(inputs)
-                        loss = criterion(outputs, labels)
-                    val_running_loss += loss.item() * inputs.size(0)
-            
-            val_epoch_loss = val_running_loss / dataset_sizes['val']
-            current_val_loss_history.append(val_epoch_loss)
-
-            # Early stopping
-            if early_stop_patience > 0:
-                if val_epoch_loss < best_val_loss:
-                    best_val_loss = val_epoch_loss
-                    epochs_no_improve = 0
-                else:
-                    epochs_no_improve += 1
-                if epochs_no_improve >= early_stop_patience:
-                    print(f"Early stop at Epoch {epoch+1}/{num_epochs} (val loss {epochs_no_improve} epochs no improve)")
-                    break
-
-            if (epoch + 1) % 10 == 0 or epoch == 0:
-                print(f"Epoch {epoch+1:02d}/{num_epochs} | Train Loss: {train_epoch_loss:.4f} | Val Loss: {val_epoch_loss:.4f}")
-            
-        # val 평가
-        model.eval()
-        val_y_true, val_y_pred = [], []
-        with torch.no_grad():
-            for inputs, labels in dataloaders['val']:
-                inputs, labels = inputs.to(device), labels.to(device)
-                outputs = model(inputs)
-                _, preds = torch.max(outputs, 1)
-                val_y_true.extend(labels.cpu().numpy())
-                val_y_pred.extend(preds.cpu().numpy())
-
-        report_dict = classification_report(val_y_true, val_y_pred, target_names=class_names, output_dict=True, zero_division=0)
-        curr_bad_precision = report_dict[class_names[0]]['precision']
-        curr_bad_recall = report_dict[class_names[0]]['recall']
-        curr_bad_f1 = report_dict[class_names[0]]['f1-score']
-        
-        if (4 * curr_bad_precision + curr_bad_recall) == 0:
-            curr_f2 = 0.0
-        else:
-            curr_f2 = 5 * curr_bad_precision * curr_bad_recall / (4 * curr_bad_precision + curr_bad_recall)
-
-        val_bad_recalls.append(curr_bad_recall)
-        val_bad_f1s.append(curr_bad_f1)
-        val_f2_scores.append(curr_f2)
-
-        print(f"[Validation] 가중치 {current_weight} | F2: {curr_f2:.4f} | Recall: {curr_bad_recall:.4f}")
-
-        if curr_f2 > best_f2:
-            best_f2 = curr_f2
-            optimal_weight = current_weight
-            best_model_weights = copy.deepcopy(model.state_dict())
-            best_train_loss_history = current_train_loss_history.copy()
-            best_val_loss_history = current_val_loss_history.copy()
-    
-    print(f"\n{'='*60}")
-    print(f"최적 Class Weight: {optimal_weight} (최고 Val F2: {best_f2:.4f})")
-    print(f"{'='*60}")
-
-    save_path = os.path.join(run_dirs['weights'], f'{model_name}_best_weight_{optimal_weight}.pth')
-    torch.save(best_model_weights, save_path)
-    print(f"best 가중치 파일 저장 완료: {save_path}")
-
-    # 2단계: 최적 모델로 test 셋 최종 평가
-    model.load_state_dict(best_model_weights)
-    model.eval()
-    test_y_true, test_y_pred = [], []
-
-    with torch.no_grad():
-        for inputs, labels in dataloaders['test']:
-            inputs, labels = inputs.to(device), labels.to(device)
-            outputs = model(inputs)
-            _, preds = torch.max(outputs, 1)
-            test_y_true.extend(labels.cpu().numpy())
-            test_y_pred.extend(preds.cpu().numpy())
-
-    print(f"\n[ {model_name.upper()} 최종 TEST SET 성능 지표 (Weight: {optimal_weight}) ]")
-    print(classification_report(test_y_true, test_y_pred, target_names=class_names, digits=4))
-
-    return model, val_bad_recalls, val_bad_f1s, val_f2_scores, test_y_true, test_y_pred, best_train_loss_history, best_val_loss_history
+from sklearn.metrics import fbeta_score
+from sklearn.model_selection import StratifiedKFold, train_test_split
+from torch.utils.data import DataLoader
+from src.utils import set_seed
+from src.model import build_model_bin
+from src.dataset import ScrewDataset, train_transform, val_transform
+from typing import Dict, List, Tuple
 
 
-
-
-# main6.ipynb
-# ==================================================================
 def measure_inference_speed_with_gpu(model, device, input_size=(1, 3, 224, 224), num_runs=100):
     """
     """
@@ -252,276 +84,345 @@ def measure_inference_speed_with_cpu(model, input_size=(1, 3, 224, 224), num_run
     return fps, latency_ms
 
 
+def run_grid_search_with_kfold_cv(
+    model_name,
+    all_paths,
+    all_labels_np,
+    bad_weight_list,
+    n_splits,
+    num_epochs,
+    batch_size,
+    num_workers,
+    device,
+    run_dirs,
+    early_stop_patience,
+    champion_select
+) -> Tuple:
+    """
+    Grid Search + Stratified K-Fold CV
+    
+    Returns:
+        best_weight: 최적 가중치
+        weight_f2: {weight: [fold1_f2, fold2_f2, ...]}
+        db: 전체 학습 히스토리
+    """
+    if champion_select not in ("robust", "mean"):
+        raise ValueError("champion_select must be 'robust' or 'mean'")
 
-from sklearn.model_selection import StratifiedKFold
-from src.utils import set_seed
-from torch.utils.data import WeightedRandomSampler, DataLoader
-from src.model import build_model_bin
-from sklearn.metrics import classification_report
-from src.dataset import ScrewDataset
-from src.dataset import train_transform, val_transform
-
-
-def f2_score(precision, recall):
-    denom = 4 * precision + recall
-    return 5 * precision * recall / denom if denom > 0 else 0.0
-
-
-def run_kfold_experiment(model_name, all_paths, all_labels_np,
-                         bad_weight_list, n_splits, num_epochs,
-                         batch_size, num_workers, device,
-                         run_dirs, early_stop_patience):
-    db = {
+    bad_weight_list = list(bad_weight_list)
+    fold_keys = [f"fold{i}" for i in range(1, n_splits + 1)]
+    
+    # 데이터 저장 구조
+    db: Dict[float, Dict[str, dict]] = {
         w: {
-            f'fold{fold}': {
-                'train_loss': [],
-                'val_loss': [],
-                'f2_score': [],
-                'y_true': [],
-                'best_epoch': -1,
-                'best_f2': -1
-            } for fold in range(1, 6)
+            fk: {
+                "train_loss": [], 
+                "val_loss": [], 
+                "f2_score": [], 
+                "best_epoch": -1, 
+                "best_f2": -1.0,
+                "best_val_loss": -1.0
+            } for fk in fold_keys
         } for w in bad_weight_list
     }
-
-    weight_f2 = {}
+    weight_f2: Dict[float, List[float]] = {w: [] for w in bad_weight_list}
 
     skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
-    bad_weight_list = bad_weight_list
-
-    weights_dir = run_dirs.get('weights', './outputs/')
-    os.makedirs(weights_dir, exist_ok=True)
-    # model_save_dir = os.path.join(weights_dir, 'weights')
-    # os.makedirs(model_save_dir, exist_ok=True)
-
-    print(f"\n{'='*60}")
-    print(f"모델: {model_name.upper()} | {n_splits}-Fold CV | bad_weight sweep: {bad_weight_list}")
-    print(f"{'='*60}")
-
     k_fold_splits = list(skf.split(all_paths, all_labels_np))
 
-    global_best_robust = -1.0
-    champion_paths = []
-    champion_weight = None
-    # w_map = {}
+    weights_dir = run_dirs.get("weights", "./outputs/")
+    os.makedirs(weights_dir, exist_ok=True)
 
+    # ===== Grid Search Loop =====
     for w in bad_weight_list:
         set_seed(42)
-        print(f'[Weight {w}/{bad_weight_list[-1]}]')
-        current_w_paths = []
+        print(f"\n{'='*60}")
+        print(f"[Weight {w:.1f}]")
+        print(f"{'='*60}")
 
         class_weight = torch.tensor([1.0, float(w)], dtype=torch.float32, device=device)
         criterion = nn.CrossEntropyLoss(weight=class_weight)
 
+        # ===== K-Fold Loop =====
         for fold_idx, (train_idx, val_idx) in enumerate(k_fold_splits):
-            set_seed(42)
-            print(f'[Fold {fold_idx+1}/{n_splits}]')
+            set_seed(42 + fold_idx)
+            fk = fold_keys[fold_idx]
+            print(f"\n  [{fk}] Training...")
 
-            train_labels_fold = all_labels_np[train_idx]
-            train_labels_bin = (train_labels_fold > 0).astype(int)
-            class_counts = np.bincount(train_labels_bin)
-            class_weights = 1.0 / class_counts
-            sample_weights = class_weights[train_labels_bin]
-
-            sampler = WeightedRandomSampler(weights=sample_weights, num_samples=len(sample_weights), replacement=True)
-
+            # 데이터 준비
             train_path_fold = [all_paths[i] for i in train_idx]
-            val_path_fold = [all_paths[i] for i in val_idx]
+            val_path_fold   = [all_paths[i] for i in val_idx]
 
-            train_dataset = ScrewDataset(train_path_fold, all_labels_np[train_idx], transform=train_transform)
-            val_dataset = ScrewDataset(val_path_fold, all_labels_np[val_idx], transform=val_transform)
+            train_dataset = ScrewDataset(train_path_fold, all_labels_np[train_idx], 
+                                        transform=train_transform)
+            val_dataset   = ScrewDataset(val_path_fold, all_labels_np[val_idx], 
+                                        transform=val_transform)
 
-            train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=sampler,
-                                  num_workers=num_workers, pin_memory=True)
-            val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False,
-                                num_workers=num_workers, pin_memory=True)
-
+            train_loader = DataLoader(train_dataset, batch_size=batch_size, 
+                                     shuffle=True, num_workers=num_workers, 
+                                     pin_memory=True)
+            val_loader = DataLoader(val_dataset, batch_size=batch_size, 
+                                   shuffle=False, num_workers=num_workers, 
+                                   pin_memory=True)
+            
+            # 모델 초기화
             model = build_model_bin(model_name).to(device)
             optimizer = optim.Adam(model.parameters(), lr=1e-4)
-            scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.5, patience=3, verbose=True)
+            
+            # Early Stopping 변수
+            best_f2 = 0.0  # ← 추가!
+            best_epoch = -1
+            best_val_loss = float('inf')
+            no_improve_f2 = 0
 
-            best_f2 = -1
-            best_f2_epoch = -1
-            best_f2_val_loss = float('inf')
-            min_val_loss = float('inf')
-            best_state = None
-            no_improve = 0
-
+            # ===== Epoch Loop =====
             for epoch in range(num_epochs):
+                # --- Train ---
                 model.train()
                 running_train_loss = 0.0
-
+                
                 for imgs, lbls in train_loader:
                     imgs = imgs.to(device)
                     lbls = (lbls > 0).long().to(device)
-
+                    
                     optimizer.zero_grad()
-                    outputs = model(imgs)
-
-                    loss = criterion(outputs, lbls)
+                    loss = criterion(model(imgs), lbls)
                     loss.backward()
                     optimizer.step()
                     
                     running_train_loss += loss.item()
-                
-                avg_train_loss = running_train_loss / len(train_loader)
 
+                avg_train_loss = running_train_loss / max(len(train_loader), 1)
+
+                # --- Validation ---
                 model.eval()
                 running_val_loss = 0.0
                 y_true_ep, y_pred_ep = [], []
-
-                with torch.no_grad():
+                
+                with torch.no_grad():  # ← 수정!
                     for imgs, lbls in val_loader:
                         imgs = imgs.to(device)
                         lbls = (lbls > 0).long().to(device)
                         
-                        outputs = model(imgs)
-                        running_val_loss += criterion(outputs, lbls).item()
-                
-                        preds = outputs.argmax(dim=1)
+                        logits = model(imgs)
+                        running_val_loss += criterion(logits, lbls).item()
+                        
                         y_true_ep.extend(lbls.cpu().numpy())
-                        y_pred_ep.extend(preds.cpu().numpy())
-                    
-                avg_val_loss = running_val_loss / len(val_loader)
-                scheduler.step(avg_val_loss)
+                        y_pred_ep.extend(logits.argmax(dim=1).cpu().numpy())
 
-                report_ep = classification_report(y_true_ep, y_pred_ep, output_dict=True, zero_division=0)
-                precision = report_ep.get('1', {}).get('precision', 0.0)
-                recall = report_ep.get('1', {}).get('recall', 0.0)
-                f2_ep = f2_score(precision, recall)
+                avg_val_loss = running_val_loss / max(len(val_loader), 1)
 
-                if (epoch+1) % 10 == 0 or epoch == 0:
-                    print(f"  Epoch {epoch+1:02d} | Train: {avg_train_loss:.4f} | Val: {avg_val_loss:.4f} | F2(bad): {f2_ep:.4f}")
-
-                db[w][f'fold{fold_idx+1}']['train_loss'].append(avg_train_loss)
-                db[w][f'fold{fold_idx+1}']['val_loss'].append(avg_val_loss)
-                db[w][f'fold{fold_idx+1}']['f2_score'].append(f2_ep)
-
-                # f2 score 더 좋을시 best 모델 갱신 및 db 값 갱신
+                # F2-score 계산
+                f2_ep = fbeta_score(y_true_ep, y_pred_ep, beta=2, pos_label=1, 
+                                   zero_division=0)
+                
+                # 히스토리 저장 (매 epoch)
+                db[w][fk]["train_loss"].append(avg_train_loss)
+                db[w][fk]["val_loss"].append(avg_val_loss)
+                db[w][fk]["f2_score"].append(f2_ep)
+                
+                # Early Stopping 체크
                 if f2_ep > best_f2:
                     best_f2 = f2_ep
-                    best_f2_epoch = epoch+1
-                    best_f2_val_loss = avg_val_loss
-                    best_state = copy.deepcopy(model.state_dict())
-
-                    db[w][f'fold{fold_idx+1}']['best_epoch'] = best_f2_epoch
-                    db[w][f'fold{fold_idx+1}']['best_f2'] = best_f2
-
-                elif f2_ep == best_f2 and avg_val_loss < best_f2_val_loss:
-                    best_f2_epoch = epoch+1
-                    best_f2_val_loss = avg_val_loss
-                    best_state = copy.deepcopy(model.state_dict())
-
-                    db[w][f'fold{fold_idx+1}']['best_epoch'] = best_f2_epoch
-                    db[w][f'fold{fold_idx+1}']['best_f2'] = best_f2
-                
-                # early stopping / val loss 기준으로 판단
-                if avg_val_loss < min_val_loss:
-                    min_val_loss = avg_val_loss # val loss 갱신
-                    no_improve = 0
+                    best_epoch = epoch
+                    best_val_loss = avg_val_loss
+                    no_improve_f2 = 0
+                    
+                    # 모델 저장 (선택사항)
+                    # save_path = f"{weights_dir}/w{w}_fold{fold_idx+1}_best.pth"
+                    # torch.save(model.state_dict(), save_path)
                 else:
-                    no_improve += 1
+                    no_improve_f2 += 1
 
-                if early_stop_patience > 0 and no_improve >= early_stop_patience:
-                    print(f"    -> early stop at epoch {epoch+1}")
+                # 출력
+                if epoch == 0 or (epoch + 1) % 10 == 0:
+                    print(f"    Ep {epoch+1:02d} | "
+                          f"TrL {avg_train_loss:.4f} | "
+                          f"VaL {avg_val_loss:.4f} | "
+                          f"F2 {f2_ep:.4f} | "
+                          f"Best {best_f2:.4f}")
+
+                # Early Stop
+                if early_stop_patience > 0 and no_improve_f2 >= early_stop_patience:
+                    print(f"    -> Early stop at epoch {epoch + 1} "
+                          f"(no improve for {early_stop_patience} epochs)")
                     break
-
-            # epoch 반복문 끝
             
-            # 여기서부터 좀 어려움
-            if best_state is not None:
-                temp_path = os.path.join(weights_dir, f"temp_w{w}_fold{fold_idx+1}.pth")
-                torch.save(best_state, temp_path)
-                current_w_paths.append(temp_path)
-        
+            # Fold 종료 - Best 값 저장
+            db[w][fk]["best_epoch"] = best_epoch
+            db[w][fk]["best_f2"] = best_f2
+            db[w][fk]["best_val_loss"] = best_val_loss
+            weight_f2[w].append(best_f2)  # ← 중요!
+            
+            print(f"  [{fk}] Finished | Best F2: {best_f2:.4f} at epoch {best_epoch+1}")
 
-        # fold 반복문 끝
-        f2_list = [db[w][f'fold{i}']['best_f2'] for i in range(1, 6)]
+        # Weight 종료 - 평균 계산
+        mean_f2 = np.mean(weight_f2[w])
+        std_f2 = np.std(weight_f2[w])
+        print(f"\n[Weight {w:.1f}] Summary:")
+        print(f"  Fold F2s: {[f'{f:.4f}' for f in weight_f2[w]]}")
+        print(f"  Mean F2:  {mean_f2:.4f} ± {std_f2:.4f}")
 
-        mean_f2, std_f2 = np.mean(f2_list), np.std(f2_list)
-        robust_score = mean_f2 - std_f2
-
-        weight_f2[w] = f2_list
-
-        print(f"\n Weight {w} 결산 | 평균: {mean_f2:.4f} | Std: {std_f2:.4f} | 보장점수(Robust): {robust_score:.4f}")
-
-        if robust_score > global_best_robust:
-            print(f'\n [robust score 갱신]: {global_best_robust:.4f} -> {robust_score}')
-            global_best_robust = robust_score
-            champion_weight = w
-
-            for p in champion_paths:
-                if os.path.exists(p):
-                    os.remove(p)
-            champion_paths = current_w_paths
-        
-        else:
-            print()
-            for p in current_w_paths:
-                if os.path.exists(p):
-                    os.remove(p)
-
-    # weight 반복문 끝 (for문 아에 끝)
+    # ===== Champion Selection =====
     print(f"\n{'='*60}")
-    print(f"{model_name} / 모든 학습 종료! best 단일 모델을 선발 시작")
-
-    champion_f2_scores = [db[champion_weight][f'fold{i}']['best_f2'] for i in range(1, 6)]
-    best_fold_idx = np.argmax(champion_f2_scores) # (0~4)
-    final_best_path = champion_paths[best_fold_idx]
-    best_single_f2 = champion_f2_scores[best_fold_idx]
-
-    for i, p in enumerate(champion_paths):
-        if i != best_fold_idx and os.path.exists(p):
-            os.remove(p)
-        
-    ultimate_champion_path = os.path.join(weights_dir, f"{model_name}_CHAMPION_w{champion_weight}_fold{best_fold_idx+1}.pth")
-    os.rename(final_best_path, ultimate_champion_path)
-            
-    print(f"\n[{model_name} 최종] Weight: {champion_weight} / Fold: {best_fold_idx+1} (F2 Score: {best_single_f2:.4f})")
-    print(f"최종 모델 파일: {ultimate_champion_path}")
+    print("Grid Search Results:")
     print(f"{'='*60}")
+    
+    results_table = []
+    for w in bad_weight_list:
+        mean_f2 = np.mean(weight_f2[w])
+        std_f2 = np.std(weight_f2[w])
+        
+        if champion_select == "robust":
+            score = mean_f2 - std_f2  # Robust score
+        else:  # "mean"
+            score = mean_f2
+        
+        results_table.append({
+            'weight': w,
+            'mean_f2': mean_f2,
+            'std_f2': std_f2,
+            'score': score
+        })
+        
+        print(f"Weight {w:.1f}: Mean F2 = {mean_f2:.4f} ± {std_f2:.4f} "
+              f"({'Robust' if champion_select == 'robust' else 'Score'}: {score:.4f})")
+    
+    # 최적값 선정
+    best_result = max(results_table, key=lambda x: x['score'])
+    best_weight = best_result['weight']
+    
+    print(f"\n{'='*60}")
+    print(f"🏆 Champion: Weight {best_weight:.1f}")
+    print(f"   Mean F2: {best_result['mean_f2']:.4f} ± {best_result['std_f2']:.4f}")
+    print(f"{'='*60}\n")
+
+    return best_weight, weight_f2, db
 
 
-    # Test data 평가
-    best_model = build_model_bin(model_name).to(device)
-    best_model.load_state_dict(torch.load(ultimate_champion_path))
-    best_model.eval()
+def train_with_best_weight(model_name, weight):
+    # 1) 전체 데이터 로드
+    TRAIN_DIR = "./data/new_k-fold_data/train"
+    all_paths = []
+    all_labels = []
+    
+    class_names = ["good", "type1", "type2", "type3", "type4", "type5"]
+    for class_idx, class_name in enumerate(class_names):
+        class_dir = os.path.join(TRAIN_DIR, class_name)
+        for fname in sorted(os.listdir(class_dir)):
+            if fname.lower().endswith(('.png', '.jpg', '.jpeg')):
+                all_paths.append(os.path.join(class_dir, fname))
+                all_labels.append(class_idx)
 
-    TEST_DIR = './data/k-fold_data/test'
-    CLASS_NAMES = ['good', 'type1', 'type2', 'type3', 'type4', 'type5']
+    print(f"전체 데이터: {len(all_paths)}장")  # 425
+
+    train_paths, val_paths, train_labels, val_labels = train_test_split(
+        all_paths, 
+        all_labels, 
+        test_size=0.2,  # 85장
+        stratify=all_labels,  # 클래스 비율 유지
+        random_state=42
+    )
+
+    train_dataset = ScrewDataset(train_paths, np.array(train_labels), train_transform)
+    val_dataset = ScrewDataset(val_paths, np.array(val_labels), val_transform)
+
+    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = build_model_bin(model_name).to(device)
+
+    criterion = nn.CrossEntropyLoss(
+        weight=torch.tensor([1.0, weight]).to(device)  # 1단계 최적값
+    )
+    optimizer = optim.Adam(model.parameters(), lr=1e-4)
+    
+    # 6) 학습 (Loss 기록)
+    history = {
+        'train_loss': [],
+        'val_loss': [],
+        'val_f2': []
+    }
+
+    for epoch in range(40):
+        # Train
+        model.train()
+        train_loss = 0.0
+        for imgs, labels in train_loader:
+            imgs = imgs.to(device)
+            labels = (labels > 0).long().to(device)
+            
+            optimizer.zero_grad()
+            loss = criterion(model(imgs), labels)
+            loss.backward()
+            optimizer.step()
+            
+            train_loss += loss.item()
+        
+        train_loss /= len(train_loader)
+        
+        # Validation
+        model.eval()
+        val_loss = 0.0
+        all_preds = []
+        all_labels = []
+        
+        with torch.no_grad():
+            for imgs, labels in val_loader:
+                imgs = imgs.to(device)
+                labels_bin = (labels > 0).long().to(device)
+                
+                outputs = model(imgs)
+                loss = criterion(outputs, labels_bin)
+                val_loss += loss.item()
+                
+                preds = torch.argmax(outputs, dim=1)
+                all_preds.extend(preds.cpu().numpy())
+                all_labels.extend(labels_bin.cpu().numpy())
+        
+        val_loss /= len(val_loader)
+        from sklearn.metrics import fbeta_score
+        val_f2 = fbeta_score(all_labels, all_preds, beta=2)
+
+        history['train_loss'].append(train_loss)
+        history['val_loss'].append(val_loss)
+        history['val_f2'].append(val_f2)
+
+        if epoch == 0 or (epoch + 1) % 10 == 0:
+            print(f"Epoch {epoch+1}/40 | "
+                  f"Train Loss: {train_loss:.4f} | "
+                  f"Val Loss: {val_loss:.4f} | "
+                  f"Val F2: {val_f2:.4f}")
+    
+    TEST_DIR         = "./data/new_k-fold_data/test"
+    class_names_test = ["good", "type1", "type2", "type3", "type4", "type5"]
+    valid_exts       = (".png", ".jpg", ".jpeg", ".bmp", ".webp")
 
     test_paths, test_labels = [], []
-    valid_exts = ('.png', '.jpg', '.jpeg', '.bmp', '.webp')
-
-    for class_idx, class_name in enumerate(CLASS_NAMES): 
+    for class_idx, class_name in enumerate(class_names_test):
         class_dir = os.path.join(TEST_DIR, class_name)
         if not os.path.isdir(class_dir):
             continue
-
         for fname in sorted(os.listdir(class_dir)):
             if fname.lower().endswith(valid_exts):
                 test_paths.append(os.path.join(class_dir, fname))
-                test_labels.append(class_idx) 
+                test_labels.append(class_idx)
 
-    test_labels_np = np.array(test_labels, dtype=np.int64)
+    if not test_paths:
+        raise ValueError(f"{TEST_DIR} 에서 이미지를 찾지 못함")
 
-    test_ds = ScrewDataset(test_paths, test_labels_np, transform=val_transform)
-    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False,
-                             num_workers=num_workers, pin_memory=True)
+    test_ds     = ScrewDataset(test_paths, np.array(test_labels, dtype=np.int64), transform=val_transform)
+    test_loader = DataLoader(test_ds, batch_size=16, shuffle=False,
+                             num_workers=0, pin_memory=True)
 
     y_true_test, y_pred_test = [], []
     with torch.no_grad():
         for imgs, lbls in test_loader:
             imgs = imgs.to(device)
-            lbls = (lbls > 0).long().to(device)
-
-            outputs = best_model(imgs)
-            preds = outputs.argmax(dim=1)
-        
-            y_true_test.extend(lbls.cpu().numpy())
-            y_pred_test.extend(preds.cpu().numpy())
-
-    best_train_loss = db[champion_weight][f'fold{best_fold_idx+1}']['train_loss']
-    best_val_loss = db[champion_weight][f'fold{best_fold_idx+1}']['val_loss']
-
-    return best_model, weight_f2, best_train_loss, best_val_loss, y_true_test, y_pred_test, db
+            lbls = (lbls > 0).long()
+            preds = model(imgs).argmax(dim=1).cpu()
+            y_true_test.extend(lbls.numpy())
+            y_pred_test.extend(preds.numpy())
+    
+    return y_true_test, y_pred_test, model, history
