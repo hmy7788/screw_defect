@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 import time
-from sklearn.metrics import fbeta_score
+from sklearn.metrics import fbeta_score, precision_score, recall_score
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from torch.utils.data import DataLoader
 from src.utils import set_seed
@@ -118,8 +118,8 @@ def run_grid_search_with_kfold_cv(
             fk: {
                 "train_loss": [], 
                 "val_loss": [], 
-                "f2_score": [], 
-                "best_epoch": -1, 
+                "f2_score": [],
+                "best_epoch": -1,
                 "best_f2": -1.0,
                 "best_val_loss": -1.0
             } for fk in fold_keys
@@ -426,3 +426,211 @@ def train_with_best_weight(model_name, weight):
             y_pred_test.extend(preds.numpy())
     
     return y_true_test, y_pred_test, model, history
+
+
+def run_repeated_holdout_a2(
+    model_name: str,
+    bad_weight_list: List[float],
+    seeds: List[int],
+    device,
+    n_splits: int = 5,
+    num_epochs_cv: int = 40,
+    num_epochs_final: int = 40,
+    batch_size: int = 16,
+    num_workers: int = 0,
+    early_stop_patience: int = 10,
+    test_size: float = 0.115,
+    champion_select: str = "mean",
+) -> List[dict]:
+    """
+    A-2 방식 Repeated Holdout (leakage 없음).
+
+    각 seed마다:
+      1. 전체 데이터(train/ + test/ 합산) → stratified split → train_pool / test_set
+      2. train_pool에서 weight sweep + K-fold CV → best_weight 선정
+      3. best_weight로 train_pool 전체 재학습 (K-fold 없이 full training)
+      4. test_set 평가
+
+    Args:
+        bad_weight_list : weight sweep 후보 (예: [1.5, 2.0, 2.5, 3.0, 3.5])
+        seeds           : 반복 seed 목록 (예: [42, 123, 456])
+        num_epochs_cv   : weight sweep K-fold 학습 epoch
+        num_epochs_final: 최종 full 재학습 epoch
+        test_size       : 전체 대비 test 비율 (기본 ~55/480 ≈ 0.115)
+        champion_select : 'mean' or 'robust' (mean − std)
+    """
+    TRAIN_DIR   = "./data/new_k-fold_data/train"
+    TEST_DIR    = "./data/new_k-fold_data/test"
+    VALID_EXTS  = (".png", ".jpg", ".jpeg", ".bmp", ".webp")
+    CLASS_NAMES = ["good", "type1", "type2", "type3", "type4", "type5"]
+
+    # 전체 데이터 풀링
+    all_paths, all_labels = [], []
+    for root_dir in [TRAIN_DIR, TEST_DIR]:
+        for class_name in CLASS_NAMES:
+            class_dir = os.path.join(root_dir, class_name)
+            if not os.path.isdir(class_dir):
+                continue
+            for fname in sorted(os.listdir(class_dir)):
+                if fname.lower().endswith(VALID_EXTS):
+                    all_paths.append(os.path.join(class_dir, fname))
+                    all_labels.append(0 if class_name == "good" else 1)
+
+    all_labels_np = np.array(all_labels)
+    total = len(all_paths)
+    print(f"[A-2 Repeated Holdout] 전체: {total}장 "
+          f"(good={int((all_labels_np==0).sum())}, bad={int(all_labels_np.sum())})")
+    print(f"  모델: {model_name} | weight 후보: {bad_weight_list} | seeds: {seeds}\n")
+
+    results = []
+
+    for seed in seeds:
+        print(f"\n{'='*60}")
+        print(f"[Seed {seed}] Step 1. Train/Test Split")
+        print(f"{'='*60}")
+
+        set_seed(seed)
+        tr_paths, te_paths, tr_labels, te_labels = train_test_split(
+            all_paths, all_labels_np,
+            test_size=test_size,
+            stratify=all_labels_np,
+            random_state=seed,
+        )
+        tr_labels_np = np.array(tr_labels)
+        te_labels_np = np.array(te_labels)
+        print(f"  train_pool: {len(tr_paths)}장 (bad={int(tr_labels_np.sum())})")
+        print(f"  test_set  : {len(te_paths)}장 (bad={int(te_labels_np.sum())})")
+
+        # ── Step 2. Weight Sweep + K-Fold CV ──────────────────────────
+        print(f"\n[Seed {seed}] Step 2. Weight Sweep + {n_splits}-Fold CV")
+        skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+        fold_splits = list(skf.split(tr_paths, tr_labels_np))
+
+        weight_scores: Dict[float, float] = {}
+
+        for w in bad_weight_list:
+            class_w = torch.tensor([1.0, float(w)], dtype=torch.float32, device=device)
+            criterion = nn.CrossEntropyLoss(weight=class_w)
+            fold_f2s = []
+
+            for fold_idx, (fi, vi) in enumerate(fold_splits):
+                set_seed(seed + fold_idx)
+
+                fi_paths  = [tr_paths[i] for i in fi]
+                vi_paths  = [tr_paths[i] for i in vi]
+
+                fi_ds = ScrewDataset(fi_paths, tr_labels_np[fi], transform=train_transform)
+                vi_ds = ScrewDataset(vi_paths, tr_labels_np[vi], transform=val_transform)
+
+                fi_loader = DataLoader(fi_ds, batch_size=batch_size, shuffle=True,
+                                       num_workers=num_workers, pin_memory=(device.type == "cuda"))
+                vi_loader = DataLoader(vi_ds, batch_size=batch_size, shuffle=False,
+                                       num_workers=num_workers, pin_memory=(device.type == "cuda"))
+
+                model = build_model_bin(model_name).to(device)
+                optimizer = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-2)
+                scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs_cv)
+
+                best_f2, no_improve = 0.0, 0
+                for epoch in range(num_epochs_cv):
+                    model.train()
+                    for imgs, lbls in fi_loader:
+                        imgs, lbls = imgs.to(device), lbls.to(device)
+                        optimizer.zero_grad()
+                        criterion(model(imgs), lbls).backward()
+                        optimizer.step()
+                    scheduler.step()
+
+                    model.eval()
+                    y_true_v, y_pred_v = [], []
+                    with torch.no_grad():
+                        for imgs, lbls in vi_loader:
+                            y_true_v.extend(lbls.numpy())
+                            y_pred_v.extend(model(imgs.to(device)).argmax(dim=1).cpu().numpy())
+
+                    f2_ep = fbeta_score(y_true_v, y_pred_v, beta=2, pos_label=1, zero_division=0)
+                    if f2_ep > best_f2:
+                        best_f2, no_improve = f2_ep, 0
+                    else:
+                        no_improve += 1
+                    if early_stop_patience > 0 and no_improve >= early_stop_patience:
+                        break
+
+                fold_f2s.append(best_f2)
+
+            mean_f2 = float(np.mean(fold_f2s))
+            std_f2  = float(np.std(fold_f2s))
+            score   = mean_f2 - std_f2 if champion_select == "robust" else mean_f2
+            weight_scores[w] = score
+            print(f"  weight={w:.1f}: mean F2={mean_f2:.4f} ± {std_f2:.4f}  score={score:.4f}")
+
+        best_weight = max(weight_scores, key=weight_scores.__getitem__)
+        print(f"  → best_weight = {best_weight}")
+
+        # ── Step 3. Full Retraining on train_pool ─────────────────────
+        print(f"\n[Seed {seed}] Step 3. Full Retrain (weight={best_weight}, {num_epochs_final} epochs)")
+        set_seed(seed)
+
+        full_ds     = ScrewDataset(tr_paths, tr_labels_np, transform=train_transform)
+        full_loader = DataLoader(full_ds, batch_size=batch_size, shuffle=True,
+                                 num_workers=num_workers, pin_memory=(device.type == "cuda"))
+
+        class_w   = torch.tensor([1.0, float(best_weight)], dtype=torch.float32, device=device)
+        criterion = nn.CrossEntropyLoss(weight=class_w)
+        final_model = build_model_bin(model_name).to(device)
+        optimizer   = optim.AdamW(final_model.parameters(), lr=1e-4, weight_decay=1e-2)
+        scheduler   = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs_final)
+
+        for epoch in range(num_epochs_final):
+            final_model.train()
+            for imgs, lbls in full_loader:
+                imgs, lbls = imgs.to(device), lbls.to(device)
+                optimizer.zero_grad()
+                criterion(final_model(imgs), lbls).backward()
+                optimizer.step()
+            scheduler.step()
+            if (epoch + 1) % 10 == 0:
+                print(f"  Epoch {epoch+1}/{num_epochs_final} done")
+
+        # ── Step 4. Test Evaluation ───────────────────────────────────
+        print(f"\n[Seed {seed}] Step 4. Test Evaluation")
+        final_model.eval()
+        te_ds     = ScrewDataset(te_paths, te_labels_np, transform=val_transform)
+        te_loader = DataLoader(te_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+
+        y_true_t, y_pred_t = [], []
+        with torch.no_grad():
+            for imgs, lbls in te_loader:
+                y_true_t.extend(lbls.numpy())
+                y_pred_t.extend(final_model(imgs.to(device)).argmax(dim=1).cpu().numpy())
+
+        y_true_t   = np.array(y_true_t)
+        y_pred_t   = np.array(y_pred_t)
+        test_f2    = fbeta_score(y_true_t, y_pred_t, beta=2, pos_label=1, zero_division=0)
+        test_rec   = recall_score(y_true_t, y_pred_t, pos_label=1, zero_division=0)
+        test_prec  = precision_score(y_true_t, y_pred_t, pos_label=1, zero_division=0)
+
+        print(f"  Precision={test_prec:.4f} | Recall={test_rec:.4f} | F2={test_f2:.4f}")
+
+        results.append({
+            "seed":           seed,
+            "best_weight":    best_weight,
+            "test_f2":        test_f2,
+            "test_recall":    test_rec,
+            "test_precision": test_prec,
+        })
+
+    # ── 최종 요약 ─────────────────────────────────────────────────────
+    print(f"\n{'='*60}")
+    print(f"[A-2 결과 요약] {model_name}")
+    print(f"{'='*60}")
+    print(f"{'Seed':>6} | {'BestW':>5} | {'Precision':>9} | {'Recall':>6} | {'F2':>6}")
+    print("-" * 46)
+    for r in results:
+        print(f"{r['seed']:>6} | {r['best_weight']:>5.1f} | "
+              f"{r['test_precision']:>9.4f} | {r['test_recall']:>6.4f} | {r['test_f2']:>6.4f}")
+    f2s = [r["test_f2"] for r in results]
+    print(f"\n  F2 Mean ± Std : {np.mean(f2s):.4f} ± {np.std(f2s):.4f}")
+    print(f"{'='*60}\n")
+
+    return results
