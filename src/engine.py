@@ -571,8 +571,16 @@ def run_repeated_holdout_a2(
         print(f"\n[Seed {seed}] Step 3. Full Retrain (weight={best_weight}, {num_epochs_final} epochs)")
         set_seed(seed)
 
-        full_ds     = ScrewDataset(tr_paths, tr_labels_np, transform=train_transform)
+        # loss 커브용 모니터링 val split (20%) — 모델 선택에는 사용 안 함
+        mon_tr_paths, mon_val_paths, mon_tr_labels, mon_val_labels = train_test_split(
+            tr_paths, tr_labels_np,
+            test_size=0.2, stratify=tr_labels_np, random_state=seed,
+        )
+        full_ds     = ScrewDataset(mon_tr_paths, np.array(mon_tr_labels), transform=train_transform)
+        mon_val_ds  = ScrewDataset(mon_val_paths, np.array(mon_val_labels), transform=val_transform)
         full_loader = DataLoader(full_ds, batch_size=batch_size, shuffle=True,
+                                 num_workers=num_workers, pin_memory=(device.type == "cuda"))
+        mon_loader  = DataLoader(mon_val_ds, batch_size=batch_size, shuffle=False,
                                  num_workers=num_workers, pin_memory=(device.type == "cuda"))
 
         class_w   = torch.tensor([1.0, float(best_weight)], dtype=torch.float32, device=device)
@@ -581,16 +589,33 @@ def run_repeated_holdout_a2(
         optimizer   = optim.AdamW(final_model.parameters(), lr=1e-4, weight_decay=1e-2)
         scheduler   = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs_final)
 
+        history = {"train_loss": [], "val_loss": []}
+
         for epoch in range(num_epochs_final):
             final_model.train()
+            running_loss = 0.0
             for imgs, lbls in full_loader:
                 imgs, lbls = imgs.to(device), lbls.to(device)
                 optimizer.zero_grad()
-                criterion(final_model(imgs), lbls).backward()
+                loss = criterion(final_model(imgs), lbls)
+                loss.backward()
                 optimizer.step()
+                running_loss += loss.item()
             scheduler.step()
+            history["train_loss"].append(running_loss / len(full_loader))
+
+            final_model.eval()
+            val_loss = 0.0
+            with torch.no_grad():
+                for imgs, lbls in mon_loader:
+                    imgs, lbls = imgs.to(device), lbls.to(device)
+                    val_loss += criterion(final_model(imgs), lbls).item()
+            history["val_loss"].append(val_loss / len(mon_loader))
+
             if (epoch + 1) % 10 == 0:
-                print(f"  Epoch {epoch+1}/{num_epochs_final} done")
+                print(f"  Epoch {epoch+1:02d} | "
+                      f"Train Loss {history['train_loss'][-1]:.4f} | "
+                      f"Val Loss {history['val_loss'][-1]:.4f}")
 
         # ── Step 4. Test Evaluation ───────────────────────────────────
         print(f"\n[Seed {seed}] Step 4. Test Evaluation")
@@ -618,6 +643,7 @@ def run_repeated_holdout_a2(
             "test_f2":        test_f2,
             "test_recall":    test_rec,
             "test_precision": test_prec,
+            "history":        history,
         })
 
     # ── 최종 요약 ─────────────────────────────────────────────────────
@@ -632,5 +658,25 @@ def run_repeated_holdout_a2(
     f2s = [r["test_f2"] for r in results]
     print(f"\n  F2 Mean ± Std : {np.mean(f2s):.4f} ± {np.std(f2s):.4f}")
     print(f"{'='*60}\n")
+
+    # ── Loss 커브 출력 ────────────────────────────────────────────────
+    import matplotlib.pyplot as plt
+
+    n = len(results)
+    fig, axes = plt.subplots(1, n, figsize=(5 * n, 4), squeeze=False)
+    for i, r in enumerate(results):
+        ax = axes[0][i]
+        epochs = range(1, len(r["history"]["train_loss"]) + 1)
+        ax.plot(epochs, r["history"]["train_loss"], label="Train Loss")
+        ax.plot(epochs, r["history"]["val_loss"],   label="Val Loss", linestyle="--")
+        ax.set_title(f"Seed {r['seed']} (w={r['best_weight']:.1f})\n"
+                     f"Test F2={r['test_f2']:.4f} | Recall={r['test_recall']:.4f}")
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("Loss")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+    plt.suptitle(f"{model_name} - Final Retraining Loss Curves", fontsize=13)
+    plt.tight_layout()
+    plt.show()
 
     return results
