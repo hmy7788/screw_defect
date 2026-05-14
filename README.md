@@ -1,6 +1,7 @@
 # 딥러닝 기반 나사 결함 탐지 모델 성능 비교
 
-나사(Screw) 이미지를 이용한 불량 검출 이진 분류 시스템. <br>졸업논문 연구 프로젝트.
+나사(Screw) 이미지를 이용한 불량 검출 이진 분류 시스템. <br>
+2026년도 1학기 코스모스 졸업논문 연구 프로젝트.
 
 ## 개요
 
@@ -97,29 +98,6 @@ FPS_normalized = 현재 모델 FPS / 비교 모델 중 최대 FPS
 - **GPU**: NVIDIA RTX 5080
 - **Python**: 3.10.20 / **PyTorch**: 2.10.0 (cu128)
 
-## 데이터셋 구조
-
-```
-data/new_k-fold_data/              (총 480장)
-        ├── train/                 (총 425장)
-        │   ├── good/    (260장)
-        │   ├── type1/   (20장)
-        │   ├── type2/   (20장)
-        │   ├── type3/   (20장)
-        │   ├── type4/   (20장)
-        │   └── type5/   (20장)
-        └── test/                  (총 55장)
-            ├── good/    (36장)
-            ├── type1/   (4장)
-            ├── type2/   (4장)
-            ├── type3/   (5장)
-            ├── type4/   (3장)
-            └── type5/   (3장)
-```
-
-type1~5는 학습 시 모두 `label=1 (bad)`로 병합됩니다.  
-데이터 분할: Train 340 / Val 85 / Test 55
-
 ## 설치
 
 ```bash
@@ -130,10 +108,10 @@ pip install torch torchvision numpy scikit-learn pytorch-grad-cam matplotlib sea
 
 ## 실행
 
-`main6.ipynb`를 Jupyter에서 순차 실행합니다.
+`main.ipynb`를 Jupyter에서 순차 실행합니다.
 
 ```
-main6.ipynb
+main.ipynb
   ├─ 데이터 로드 및 전처리
   ├─ Grid Search + 5-Fold CV (모델별)
   │    └─ bad_weight sweep → Champion weight 선정
@@ -159,5 +137,22 @@ screw_defect/
     │   ├── model.py               # build_model_bin() (ResNet/MobileNet/VGG)
     │   ├── visualization.py       # Grad-CAM, Confusion Matrix, Weight Sweep 시각화
     │   └── utils.py               # set_seed(), make_run_dir()
-    └── data/                      # 데이터셋
+    │
+    └──  data/new_k-fold_data/ (총 480장)
+                ├── train/ (총 425장)
+                │   ├── good/    (260장)
+                │   ├── type1/   (20장)
+                │   ├── type2/   (20장)
+                │   ├── type3/   (20장)
+                │   ├── type4/   (20장)
+                │   └── type5/   (20장)
+                └── test/ (총 55장)
+                    ├── good/    (36장)
+                    ├── type1/   (4장)
+                    ├── type2/   (4장)
+                    ├── type3/   (5장)
+                    ├── type4/   (3장)
+                    └── type5/   (3장)
 ```
+type1~5는 학습 시 모두 `label=1 (bad)`로 병합됩니다.  
+데이터 분할: Train 340 / Val 85 / Test 55
