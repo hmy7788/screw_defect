@@ -18,7 +18,8 @@ def load_mvtec_screw(data_root='./data/screw', test_size=0.4, seed=42):
             {
                 'path': os.path.join(train_good_dir, train_file_name),
                 'type': 'good',
-                'mask': None
+                'mask': None,
+                'label': 0
             }
         )
 
@@ -27,7 +28,8 @@ def load_mvtec_screw(data_root='./data/screw', test_size=0.4, seed=42):
             {
                 'path': os.path.join(test_good_dir, test_file_name),
                 'type': 'good',
-                'mask': None
+                'mask': None,
+                'label': 0
             }
         )
 
@@ -48,7 +50,8 @@ def load_mvtec_screw(data_root='./data/screw', test_size=0.4, seed=42):
                 {
                     'path': os.path.join(test_bad_dir, file),
                     'type': DT,
-                    'mask': mask_dir
+                    'mask': mask_dir,
+                    'label': 1
                 }
             )
 
