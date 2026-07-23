@@ -10,9 +10,7 @@ from src.dataset import *
 from src.mvtec_data import *
 from torch.utils.data import DataLoader
 from src.loc_eval import *
-from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import roc_auc_score
-import numpy as np
 
 set_seed(42)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -101,40 +99,6 @@ def _run_training(model, train_loader, val_loader, bad_weight, epochs=40, early_
     return best_f2
 
 
-def grid_search_weight(train_pool_records, weight_range, n_splits=5, epochs=40, early_stop_patience=8):
-    """Stratified 5-Fold CV로 bad_weight별 Mean Max F2를 계산해 최적 weight를 선정."""
-    types = [r['type'] for r in train_pool_records]
-    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=SEED)
-    fold_splits = list(skf.split(train_pool_records, types))
-
-    results = {}
-    for w in weight_range:
-        w = round(float(w), 2)
-        fold_f2s = []
-
-        for fold_idx, (train_idx, val_idx) in enumerate(fold_splits):
-            fold_train = [train_pool_records[i] for i in train_idx]
-            fold_val = [train_pool_records[i] for i in val_idx]
-
-            train_loader = make_loader(fold_train, train_transform, shuffle=True)
-            val_loader = make_loader(fold_val, val_transform, shuffle=False)
-
-            set_seed(SEED)
-            model = build_model_bin('resnet18').to(device)
-            fold_f2 = _run_training(model, train_loader, val_loader, bad_weight=w,
-                                     epochs=epochs, early_stop_patience=early_stop_patience)
-            fold_f2s.append(fold_f2)
-            print(f"    weight={w:.1f} fold={fold_idx+1}/{n_splits} max_f2={fold_f2:.4f}")
-
-        mean_f2 = float(np.mean(fold_f2s))
-        results[w] = {'fold_f2s': fold_f2s, 'mean_f2': mean_f2}
-        print(f"  weight={w:.1f} | Mean Max F2={mean_f2:.4f}")
-
-    best_weight = max(results, key=lambda k: results[k]['mean_f2'])
-    print(f"\nBest weight: {best_weight} (Mean Max F2={results[best_weight]['mean_f2']:.4f})")
-    return best_weight, results
-
-
 def train_final_model(train_pool_records, bad_weight, epochs=40, early_stop_patience=8):
     """champion weight로 Train/Val 분할 후 최종 재학습, best checkpoint 저장."""
     train_records, val_records = train_test_split(
@@ -193,5 +157,5 @@ if __name__ == '__main__':
 
     best_weight = 2.0  # 논문의 ResNet-18 champion weight 그대로 사용 (그리드서치 생략)
 
-    # train_final_model(train_pool_records, best_weight)
+    train_final_model(train_pool_records, best_weight)
     test_model(test_records)
