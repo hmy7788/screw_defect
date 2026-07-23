@@ -7,14 +7,14 @@
 
 ## 1. 프로젝트 배경
 
-### 기존 졸업논문 실험 (`main.ipynb`)
+### 기존 졸업논문 실험 (`cnn_model_comparison.ipynb`)
 - 데이터: `data/new_k-fold_data/` (Kaggle screw 480장, good 361 / bad 119)
 - 방법: ResNet-18 / MobileNet-V2 / VGG-16 이진분류(supervised), weighted CrossEntropy
 - 평가: Precision / Recall / **F2-Score** (주지표) / FPS / FASI
 - 결과: **ResNet-18 (weight=2.0) 최고** — Recall 1.0, F2 0.9896, FASI 0.9927
 - 결과 파일: `results.csv`, `PORTFOLIO.md`, `README.md`
 
-### 이번 신규 실험 목적 (`main2.py`)
+### 이번 신규 실험 목적 (`mvtec_localization_eval.py`)
 기존 baseline(ResNet-18, weight=2.0)을 **그대로 계승**하되:
 1. 데이터셋을 **MVTec AD `data/screw`** 로 교체 (공식 벤치마크)
 2. 평가 지표를 **6개로 확장** → 픽셀 단위 위치추정 정량평가 추가
@@ -126,8 +126,8 @@ anomalib 2.5.0 기준 이 경로로 import 가능하고 작동 확인됨.
 
 ```
 screw_defect/
-├── main.ipynb                # (기존) 졸업논문 — 건드리지 않음
-├── main2.py                  # (신규) 이번 실험 드라이버 ← 아직 미작성
+├── cnn_model_comparison.ipynb # (기존) 졸업논문 — 건드리지 않음
+├── mvtec_localization_eval.py # (신규) 이번 실험 드라이버
 ├── PLAN.md                   # 설계 요약
 ├── HANDOVER.md               # 이 파일
 ├── PORTFOLIO.md / README.md / results.csv   # 기존, 변경 없음
@@ -198,7 +198,7 @@ from sklearn.model_selection import train_test_split
 검증: train/test 개수, test 결함의 유형별 개수 출력.
 
 #### (3) 함수화
-지금은 스크립트 형태인데, `main2.py`에서 import해서 쓸 수 있게 함수로 감싸야 함:
+지금은 스크립트 형태인데, `mvtec_localization_eval.py`에서 import해서 쓸 수 있게 함수로 감싸야 함:
 ```python
 def load_mvtec_screw(data_root='./data/screw', test_size=0.4, seed=42):
     ...
@@ -208,7 +208,7 @@ def load_mvtec_screw(data_root='./data/screw', test_size=0.4, seed=42):
 
 ---
 
-### STEP 2: `main2.py` 학습부 (STEP 1 완료 후)
+### STEP 2: `mvtec_localization_eval.py` 학습부 (STEP 1 완료 후)
 
 `src/engine.py`의 패턴을 참고해 직접 짜기.
 
@@ -359,8 +359,8 @@ torch.no_grad() 블록 밖에서 호출해야 함.
 ```
 feat: mvtec_data — good 이미지 경로 수집 (train+test 361장)     ← 이미 커밋됨
 feat: mvtec_data — 결함 경로+마스크 매핑 및 stratified 분할      ← 다음 커밋
-feat: main2.py — ResNet-18 학습 루프 구현
-feat: main2.py — 이미지 단위 4지표 (P/R/F2/AUROC) 평가
+feat: mvtec_localization_eval.py — ResNet-18 학습 루프 구현
+feat: mvtec_localization_eval.py — 이미지 단위 4지표 (P/R/F2/AUROC) 평가
 feat: loc_eval — Grad-CAM pixel AUROC 구현
 feat: loc_eval — AUPRO(_AUPRO) 구현
 exp: MVTec screw 6지표 최종 결과 및 results_screw_mvtec.csv

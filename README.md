@@ -108,17 +108,17 @@ pip install torch torchvision numpy scikit-learn pytorch-grad-cam matplotlib sea
 
 ## 실행
 
-`main.ipynb`를 Jupyter에서 순차 실행합니다.
+`cnn_model_comparison.ipynb`를 Jupyter에서 순차 실행합니다.
 
 ```
-main.ipynb
+cnn_model_comparison.ipynb
   ├─ 데이터 로드 및 전처리
   ├─ Grid Search + 5-Fold CV (모델별)
   │    └─ bad_weight sweep → Champion weight 선정
   ├─ 최적 weight로 전체 데이터 재학습 (best val F2 checkpoint 저장)
   └─ 시각화 (Loss Curve, Confusion Matrix, Grad-CAM, Weight Sweep 비교)
 
-추가실험.ipynb
+mobilenet_repeated_holdout.ipynb
   └─ MobileNet-V2 Repeated Holdout (5 seeds)
        └─ Val-Test 성능 역전 원인 분석
 ```
@@ -129,8 +129,8 @@ main.ipynb
 
 ```
 screw_defect/
-    ├── main6.ipynb                # 메인 실험 노트북 (최신)
-    ├── 추가실험.ipynb              # MobileNet-V2 성능 역전 분석 추가 실험
+    ├── cnn_model_comparison.ipynb # 메인 실험 노트북 (최신)
+    ├── mobilenet_repeated_holdout.ipynb              # MobileNet-V2 성능 역전 분석 추가 실험
     ├── src/
     │   ├── dataset.py             # ScrewDataset, get_image_paths_and_labels(), transform
     │   ├── engine.py              # 추론 속도 측정, K-Fold CV, Repeated Holdout 함수
