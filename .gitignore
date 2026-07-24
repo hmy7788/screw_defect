@@ -9,5 +9,8 @@ PLAN.md
 PORTFOLIO.md
 results.csv
 data/screw/
+data/new_k-fold_data_gt
 requirements.txt
 .vscode
+HANDOVER.md
+build_kfold_ground_truth.py

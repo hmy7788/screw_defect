@@ -101,9 +101,88 @@ def show_gradcam_grid(model, test_transform, base_dir, device, save_dir, model_n
     plt.show()
 
 
-# 
-# 
-# 
+# ==============================
+# Grad-CAM 5x10 그리드 시각화 (고정 파일 지정 버전)
+# ==============================
+def show_gradcam_grid_fixed(model, test_transform, base_dir, device, save_dir, model_name='Model', data_root='./data/new_k-fold_data'):
+    """
+    """
+    model.eval()
+
+    if 'resnet' in model_name.lower():
+        target_layers = [model.layer4[-1]]
+    elif 'mobilenet' in model_name.lower():
+        target_layers = [model.features[-1]]
+    elif 'vgg' in model_name.lower():
+        target_layers = [model.features[-1]]
+
+    cam = GradCAM(model=model, target_layers=target_layers)
+
+    inv_normalize = transforms.Normalize(
+        mean=[-0.485/0.229, -0.456/0.224, -0.406/0.225],
+        std=[1/0.229, 1/0.224, 1/0.225]
+    )
+
+    row_configs = [
+        {'label': 'Good',   'dir': f'{data_root}/{base_dir}/good',  'files': ['325.png', '326.png', '327.png'], 'true_idx': 0},
+        {'label': 'Type 1', 'dir': f'{data_root}/{base_dir}/type1', 'files': ['020.png', '021.png', '022.png'], 'true_idx': 1},
+        {'label': 'Type 2', 'dir': f'{data_root}/{base_dir}/type2', 'files': ['020.png', '021.png', '022.png'], 'true_idx': 1},
+        {'label': 'Type 3', 'dir': f'{data_root}/{base_dir}/type3', 'files': ['020.png', '021.png', '022.png'], 'true_idx': 1},
+        {'label': 'Type 4', 'dir': f'{data_root}/{base_dir}/type4', 'files': ['020.png', '021.png', '022.png'], 'true_idx': 1},
+        {'label': 'Type 5', 'dir': f'{data_root}/{base_dir}/type5', 'files': ['020.png', '021.png', '022.png'], 'true_idx': 1},
+    ]
+
+    fig, axes = plt.subplots(nrows=6, ncols=3, figsize=(10, 14))
+    fig.suptitle(f'{model_name.upper()} - Prediction vs Grad-CAM', fontsize=20, fontweight='bold', y=1.02)
+
+    for row, config in enumerate(row_configs):
+        current_dir = config['dir']
+
+        for col, file_name in enumerate(config['files']):
+            ax = axes[row, col]
+            img_path = os.path.join(current_dir, file_name)
+
+            try:
+                pil_img = Image.open(img_path).convert('RGB')
+                input_tensor = test_transform(pil_img).unsqueeze(0).to(device)
+
+                with torch.no_grad():
+                    output = model(input_tensor)
+                    pred_idx = torch.argmax(output, dim=1).item()
+
+                pred_text = "Pred: GOOD" if pred_idx == 0 else "Pred: BAD"
+                text_color = "lime" if pred_idx == config['true_idx'] else "red"
+
+                targets = [ClassifierOutputTarget(config['true_idx'])]
+                inv_tensor = inv_normalize(input_tensor.squeeze(0))
+                vis_img_np = np.clip(inv_tensor.cpu().numpy().transpose((1, 2, 0)), 0, 1)
+
+                grayscale_cam = cam(input_tensor=input_tensor, targets=targets)[0, :]
+                visualization = show_cam_on_image(vis_img_np, grayscale_cam, use_rgb=True)
+
+                ax.imshow(visualization)
+                ax.set_title(pred_text, color=text_color, fontweight='bold', fontsize=12, backgroundcolor='black')
+                ax.text(0.5, -0.05, file_name, fontsize=10, color='dimgray', ha='center', va='top', transform=ax.transAxes)
+
+            except Exception:
+                ax.text(0.5, 0.5, 'Error', ha='center', va='center', color='gray')
+
+            ax.axis('off')
+
+            # 행렬 첫 번째 열에만 타입 라벨 적어주기
+            if col == 0:
+                ax.text(-0.15, 0.5, config['label'], fontsize=16, fontweight='bold', color='darkblue' if row==0 else 'darkred',
+                        va='center', ha='right', rotation='vertical', transform=ax.transAxes)
+
+    plt.tight_layout(h_pad=1.5, w_pad=1.0)
+    save_path = os.path.join(save_dir, f'{model_name}_gradcam_fixed_grid.png')
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.show()
+
+
+#
+#
+#
 def plot_confusion_matrix(y_true, y_pred, class_names, save_dir, model_name="Model"):
     cm = confusion_matrix(y_true, y_pred)
     test_report = classification_report(y_true, y_pred, target_names=class_names, output_dict=True)
